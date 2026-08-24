@@ -52,7 +52,8 @@ MAX_CAPTURE = 32 * 1024 * 1024
 class Hit:
     """One discovered geodata endpoint."""
     url: str
-    kind: str                 # kml | kmz | geojson | esri | arcgis-service | ogc-service | tiles
+    kind: str                 # kml | kmz | geojson | esri | embedded | arcgis-service |
+                              # ogc-service | tiles
     source: str               # network | init-hook | source-scan | page-probe
     content_type: str = ""
     size: int = 0
@@ -78,7 +79,7 @@ class Report:
 
     def downloadable(self) -> list[Hit]:
         """Hits we can turn into KML by a plain GET, best format first."""
-        order = {"kml": 0, "kmz": 1, "geojson": 2, "esri": 3}
+        order = {"kml": 0, "kmz": 1, "geojson": 2, "esri": 3, "embedded": 4}
         return sorted((h for h in self.hits if h.kind in order),
                       key=lambda h: order[h.kind])
 
@@ -132,6 +133,11 @@ def classify(url: str, content_type: str = "", body: bytes | None = None) -> str
                     return "geojson"
                 if looks_like_esri(obj):
                     return "esri"
+                # Not GeoJSON at the top level, but the geometry is usually
+                # wrapped in an API envelope or written in some other spelling.
+                from .coerce import contains_geodata
+                if contains_geodata(obj):
+                    return "embedded"
                 return None
 
     if ARCGIS_RE.search(url):

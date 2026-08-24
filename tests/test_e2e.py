@@ -80,7 +80,8 @@ def test_harvest_reports_pages_with_no_geodata(site, tmp_path, browser_ok, fetch
         pytest.skip("no usable chromium")
     res = harvest_page(f"{site}/about.html", tmp_path, fetcher=fetcher, wait=1.0)
     assert not res.ok
-    assert "no geodata found on this page" in res.errors
+    # the message should tell the user what to try next, not just that it failed
+    assert any("no geodata found" in e and "--headed" in e for e in res.errors)
 
 
 def test_kmz_output_format(site, tmp_path, browser_ok, fetcher):

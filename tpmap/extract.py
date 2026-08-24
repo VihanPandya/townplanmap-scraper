@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import kml as K
+from .coerce import coerce_to_feature_collection
 from .discover import discover_page
 from .net import url_to_stem
 
@@ -40,7 +41,7 @@ def _body_for(hit, bodies, fetcher):
 def harvest_page(page_url, outdir, *, fetcher=None, headed=False, wait=6.0,
                  click_layers=False, split=False, fmt="kml",
                  arcgis=False, save_report=True, user_agent=None,
-                 executable_path=None) -> PageResult:
+                 executable_path=None, latlon=False) -> PageResult:
     """Discover, download and convert everything geodata-shaped on one page."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +76,7 @@ def harvest_page(page_url, outdir, *, fetcher=None, headed=False, wait=6.0,
                 raw_docs.append((hit.url, blob))
             else:
                 obj = json.loads(blob.decode("utf-8", errors="replace"))
-                collections.append(K.to_feature_collection(obj))
+                collections.append(coerce_to_feature_collection(obj, latlon=latlon))
         except Exception as exc:
             msg = f"{hit.kind} {hit.url}: {exc}"
             log.warning("could not use %s", msg)
@@ -84,7 +85,7 @@ def harvest_page(page_url, outdir, *, fetcher=None, headed=False, wait=6.0,
     # GeoJSON lifted straight out of the live map objects.
     for layer in report.inline:
         try:
-            collections.append(K.to_feature_collection(layer))
+            collections.append(coerce_to_feature_collection(layer, latlon=latlon))
         except K.ConversionError:
             continue
 
@@ -127,5 +128,13 @@ def harvest_page(page_url, outdir, *, fetcher=None, headed=False, wait=6.0,
                       K.feature_collection_to_kml(merged, page_url).encode("utf-8"))
 
     if not result.files:
-        result.errors.append("no geodata found on this page")
+        if report.hits:
+            kinds = ", ".join(sorted({h.kind for h in report.hits}))
+            result.errors.append(
+                f"found {len(report.hits)} endpoint(s) ({kinds}) but none yielded "
+                f"geometry -- see {outdir / '_reports' / (stem + '.json')}")
+        else:
+            result.errors.append(
+                "no geodata found on this page -- retry with --headed --wait 60 and "
+                "pan/zoom the map yourself, or --click-layers")
     return result

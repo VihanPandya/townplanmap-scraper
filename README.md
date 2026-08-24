@@ -87,12 +87,37 @@ what QGIS reads into its attribute table) and as an HTML table in `<description>
 Google Earth shows in the balloon). Placemark names are promoted from whichever of
 `name`, `fp_no`, `plot_no`, `survey_no`, `tp_no`… the data provides.
 
+## Converting JSON you already have
+
+If you have a `.json` from the site (saved from the browser's network tab, or handed
+to you by anything else), convert it without touching the network:
+
+```bash
+tpmap convert plots.json                       # writes plots.kml alongside it
+tpmap convert a.json b.json -o merged.kml      # merge several into one
+tpmap convert data.json --latlon               # coordinates are [lat, lon], swap them
+cat data.json | tpmap convert - -o out.kml     # from stdin
+```
+
+It does not require the JSON to be GeoJSON. Geometry is recovered from:
+
+- **API envelopes** — `{"status":"ok","data":{...}}`, at any nesting depth
+- **Record arrays** — `{"plots":[{"id":1,"geometry":{...}}]}`
+- **lat/lng objects** — `[{"lat":23.0,"lng":72.5}, ...]`, closed rings become polygons
+- **WKT strings** — `POLYGON((72.5 23.0, ...))` from PostGIS-backed APIs
+- **Encoded polylines** — under a key that says so (`encodedPath`, `polyline`)
+- **Esri REST JSON** — including Web Mercator unprojection
+
+Ordinary API responses with no geometry are rejected rather than guessed at, so you get
+a clear error instead of a KML full of nonsense.
+
 ## Commands
 
 ```
 tpmap discover URL      what geodata does this page serve?
 tpmap list              enumerate scrapable pages (sitemap, else a link crawl)
 tpmap fetch URL...      download and convert to KML
+tpmap convert FILE...   turn JSON/GeoJSON/KMZ already on disk into KML (offline)
 ```
 
 Useful flags:
@@ -109,6 +134,12 @@ Useful flags:
 | `--rate N` | Requests per second per host (default 1.0). |
 
 ## Troubleshooting
+
+**"I got a .json, not a .kml."** The only `.json` `fetch` ever writes is
+`output/_reports/<name>.json` — that is a **diagnostic report listing the endpoints
+found, not your data**. Getting one on its own means no KML was produced; open it and
+look at `hits`. If it lists a `geojson`/`embedded`/`esri` endpoint, fetch that URL
+directly and run `tpmap convert` on it. If `hits` is empty, see the next entry.
 
 **"no geodata found on this page"** — the map probably loads on interaction. Run
 `tpmap discover URL --headed --wait 60`, then pan and zoom the map yourself; every

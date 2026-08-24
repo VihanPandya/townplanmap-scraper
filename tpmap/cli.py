@@ -162,6 +162,100 @@ def cmd_fetch(args) -> int:
 
 # --------------------------------------------------------------------------
 
+def _read_input(path: Path) -> bytes:
+    if str(path) == "-":
+        return sys.stdin.buffer.read()
+    return path.read_bytes()
+
+
+def cmd_convert(args) -> int:
+    """Turn geodata files already on disk into KML -- no browser, no network."""
+    from . import kml as K
+    from .coerce import coerce_to_feature_collection
+
+    inputs = [Path(p) for p in args.inputs]
+    missing = [p for p in inputs if str(p) != "-" and not p.exists()]
+    if missing:
+        for p in missing:
+            print(f"no such file: {p}", file=sys.stderr)
+        return 2
+
+    single_out = Path(args.out) if args.out else None
+    merge = single_out is not None and not args.split
+    written: list[Path] = []
+    pending: list[tuple[Path, dict]] = []     # (source, FeatureCollection)
+
+    def emit(dest: Path, blob: bytes) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.suffix.lower() == ".kmz":
+            dest.write_bytes(K.kml_to_kmz(blob.decode("utf-8", "replace")))
+        else:
+            dest.write_bytes(blob)
+        written.append(dest)
+        print(f"  -> {dest}  ({K.count_placemarks(blob)} placemark(s))")
+
+    for src in inputs:
+        try:
+            blob = _read_input(src)
+        except OSError as exc:
+            print(f"  ! {src}: {exc}", file=sys.stderr)
+            continue
+
+        stem = "stdin" if str(src) == "-" else src.stem
+        ext = "" if str(src) == "-" else src.suffix.lower()
+
+        # KMZ and KML need no conversion, only unwrapping or copying.
+        if ext == ".kmz" or K.is_kmz_bytes(blob):
+            try:
+                emit(single_out if (single_out and len(inputs) == 1)
+                     else src.with_suffix(".kml"), K.kmz_to_kml(blob))
+            except Exception as exc:
+                print(f"  ! {src}: {exc}", file=sys.stderr)
+            continue
+        if ext == ".kml" or K.is_kml_bytes(blob):
+            print(f"  = {src} is already KML, nothing to do")
+            continue
+
+        try:
+            obj = json.loads(blob.decode("utf-8", errors="replace"))
+        except ValueError as exc:
+            print(f"  ! {src}: not valid JSON ({exc})", file=sys.stderr)
+            continue
+
+        try:
+            fc = coerce_to_feature_collection(obj, latlon=args.latlon)
+        except Exception as exc:
+            print(f"  ! {src}: {exc}", file=sys.stderr)
+            if _is_discovery_report(obj):
+                print("    This looks like a tpmap discovery report, not geodata. "
+                      "It lists the endpoints found; fetch one of those URLs instead.",
+                      file=sys.stderr)
+            continue
+
+        print(f"  {src}: {len(fc['features'])} feature(s)")
+        if merge:
+            pending.append((src, fc))
+        else:
+            dest = single_out if (single_out and len(inputs) == 1) \
+                else src.with_suffix(".kml")
+            emit(dest, K.feature_collection_to_kml(fc, args.name or stem).encode("utf-8"))
+
+    if merge and pending:
+        combined = K.merge_feature_collections([fc for _, fc in pending])
+        emit(single_out, K.feature_collection_to_kml(
+            combined, args.name or single_out.stem).encode("utf-8"))
+
+    if not written:
+        print("\nnothing was converted.", file=sys.stderr)
+        return 1
+    print(f"\n{len(written)} file(s) written.")
+    return 0
+
+
+def _is_discovery_report(obj) -> bool:
+    return isinstance(obj, dict) and "page_url" in obj and "hits" in obj
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="tpmap",
@@ -206,6 +300,20 @@ def build_parser() -> argparse.ArgumentParser:
     _browser_opts(g)
     _common(g)
     g.set_defaults(func=cmd_fetch)
+
+    c = sub.add_parser("convert", help="convert JSON/GeoJSON/KMZ files on disk to KML")
+    c.add_argument("inputs", nargs="+", metavar="FILE",
+                   help=".json, .geojson, .kmz (or - for stdin)")
+    c.add_argument("-o", "--out", help="output .kml file; without it each input "
+                                       "becomes <input>.kml")
+    c.add_argument("--split", action="store_true",
+                   help="one .kml per input even when --out is given")
+    c.add_argument("--latlon", action="store_true",
+                   help="coordinates are [lat, lon]; swap them (default is GeoJSON "
+                        "order, [lon, lat])")
+    c.add_argument("--name", help="document name written into the KML")
+    c.add_argument("-v", "--verbose", action="count", default=0)
+    c.set_defaults(func=cmd_convert)
 
     return p
 
