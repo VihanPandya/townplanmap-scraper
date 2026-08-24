@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>Scheme C</title>
+<div id="map"></div>
+<script>
+  // Geodata arrives wrapped in an API envelope, in the site's own coordinate
+  // spelling -- no top-level GeoJSON anywhere.
+  fetch("/data/api-envelope.json").then(r => r.json()).then(d => {
+    window.__plots = d.data.plots;
+  });
+</script>

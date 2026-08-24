@@ -1,0 +1,13 @@
+{"status":"success","code":200,"message":"ok",
+ "meta":{"page":1,"total":3,"tp_no":"221"},
+ "data":{"plots":[
+  {"fp_no":"FP-101","zone":"Residential","area_sqm":1450,
+   "boundary":[{"lat":23.000,"lng":72.500},{"lat":23.000,"lng":72.505},
+               {"lat":23.005,"lng":72.505},{"lat":23.005,"lng":72.500},
+               {"lat":23.000,"lng":72.500}]},
+  {"fp_no":"FP-102","zone":"Commercial","area_sqm":980,
+   "boundary":[{"lat":23.005,"lng":72.500},{"lat":23.005,"lng":72.505},
+               {"lat":23.010,"lng":72.505},{"lat":23.005,"lng":72.500}]},
+  {"fp_no":"FP-103","zone":"Public","area_sqm":2100,
+   "the_geom":"POLYGON((72.510 23.000, 72.515 23.000, 72.515 23.005, 72.510 23.000))"}
+ ]}}

@@ -20,7 +20,8 @@ def fetcher():
 
 def test_sitemap_listing_finds_only_map_pages(site, fetcher):
     urls = discover_pages(fetcher, site + "/")
-    assert sorted(urls) == [f"{site}/tp/scheme-a.html", f"{site}/tp/scheme-b.html"]
+    assert sorted(urls) == [f"{site}/tp/scheme-a.html", f"{site}/tp/scheme-b.html",
+                            f"{site}/tp/scheme-c.html"]
 
 
 def test_link_crawl_fallback_reaches_scheme_pages(site, fetcher):
@@ -92,3 +93,35 @@ def test_kmz_output_format(site, tmp_path, browser_ok, fetcher):
     assert res.ok and all(p.endswith(".kmz") for p in res.files)
     from tpmap.kml import kmz_to_kml
     assert b"<kml" in kmz_to_kml(open(res.files[0], "rb").read())
+
+
+def test_envelope_wrapped_api_yields_kml(site, tmp_path, browser_ok, fetcher):
+    """The regression this whole coercion layer exists for.
+
+    scheme-c serves no top-level GeoJSON at all -- geometry is buried in an API
+    envelope, written as lat/lng objects and one WKT string. Before coercion
+    this page produced a report and no KML.
+    """
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    res = harvest_page(f"{site}/tp/scheme-c.html", tmp_path, fetcher=fetcher, wait=2.5)
+    assert res.ok, res.errors
+    assert res.placemarks == 3
+
+    root = ET.parse(res.files[0]).getroot()
+    assert [e.text for e in root.findall(".//k:Placemark/k:name", NS)] == \
+        ["FP-101", "FP-102", "FP-103"]
+    # lon,lat order, not lat,lon
+    first = root.find(".//k:coordinates", NS).text.split()[0]
+    assert first.startswith("72.5,23")
+    # attributes survive the conversion
+    zones = {d.find("k:value", NS).text
+             for d in root.findall(".//k:Data[@name='zone']", NS)}
+    assert zones == {"Residential", "Commercial", "Public"}
+
+
+def test_envelope_endpoint_is_classified_as_embedded(site, browser_ok):
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=2.5)
+    assert [h.kind for h in report.hits] == ["embedded"]

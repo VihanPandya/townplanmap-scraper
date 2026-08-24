@@ -3,8 +3,6 @@
 import json
 import xml.etree.ElementTree as ET
 
-import pytest
-
 from tpmap.cli import main
 from tpmap.kml import kml_to_kmz
 
