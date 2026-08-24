@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# scraper output
+output/
+*.kml
+*.kmz
+.cache/
+!tests/fixture_site/data/*.kml

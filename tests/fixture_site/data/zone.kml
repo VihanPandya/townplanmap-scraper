@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+  <name>Zoning boundary</name>
+  <Placemark><name>TP Boundary</name>
+    <Polygon><outerBoundaryIs><LinearRing><coordinates>
+      72.49,22.99 72.53,22.99 72.53,23.02 72.49,23.02 72.49,22.99
+    </coordinates></LinearRing></outerBoundaryIs></Polygon>
+  </Placemark>
+</Document></kml>

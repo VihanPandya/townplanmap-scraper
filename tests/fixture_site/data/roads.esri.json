@@ -1,0 +1,5 @@
+{"spatialReference":{"wkid":102100},
+ "features":[
+  {"attributes":{"NAME":"18m Road","OBJECTID":1},
+   "geometry":{"paths":[[[8070000.0,2630000.0],[8071000.0,2631000.0]]]}}
+ ]}

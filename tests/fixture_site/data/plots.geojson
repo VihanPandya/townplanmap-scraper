@@ -1,0 +1,6 @@
+{"type":"FeatureCollection","features":[
+ {"type":"Feature","properties":{"fp_no":"FP-1","zone":"Residential"},
+  "geometry":{"type":"Polygon","coordinates":[[[72.50,23.00],[72.51,23.00],[72.51,23.01],[72.50,23.01],[72.50,23.00]]]}},
+ {"type":"Feature","properties":{"fp_no":"FP-2","zone":"Commercial"},
+  "geometry":{"type":"Polygon","coordinates":[[[72.51,23.00],[72.52,23.00],[72.52,23.01],[72.51,23.01],[72.51,23.00]]]}}
+]}

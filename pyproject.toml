@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "townplanmap-scraper"
+version = "1.0.0"
+description = "Scrape KML geodata out of townplanmap.com"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "playwright>=1.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+tpmap = "tpmap.cli:main"
+
+[tool.setuptools]
+packages = ["tpmap"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

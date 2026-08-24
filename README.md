@@ -1,1 +1,156 @@
 # townplanmap-scraper
+
+Extracts map geodata from [townplanmap.com](https://townplanmap.com) and writes it as
+**KML** you can open in Google Earth, QGIS, or ArcGIS.
+
+TownPlanMap renders town-planning schemes, development plans and zoning overlays for
+Indian cities in a JavaScript map application — the geometry is never in the served
+HTML. Rather than scraping selectors that break on the next front-end deploy, this tool
+drives a real browser and watches what the page itself loads.
+
+## Install
+
+```bash
+pip install -r requirements.txt
+playwright install chromium        # skip if you already have a Chromium/Chrome to point at
+pip install -e .                   # optional, provides the `tpmap` command
+```
+
+Without `pip install -e .`, run it as `python3 -m tpmap` everywhere below.
+
+Already have a browser? Skip the download and point at it:
+
+```bash
+export TPMAP_CHROMIUM=/path/to/chrome     # or pass --browser-path
+```
+
+## Quickstart
+
+**Always start with `discover`.** It tells you what a page actually serves before you
+spend time downloading:
+
+```bash
+tpmap discover https://townplanmap.com/tp/town-planning-scheme-map-Gujarat-Ahmedabad-ognaj221
+```
+
+```
+  3 endpoint(s), 1 in-page layer(s) (412 features)
+
+  [kml    ] https://townplanmap.com/data/ognaj221.kml
+            via source-scan -- literal reference in page source
+  [geojson] https://api.townplanmap.com/v1/plots?tp=221
+            via network  188 KB
+```
+
+Then pull the KML down:
+
+```bash
+# one page
+tpmap fetch https://townplanmap.com/tp/town-planning-scheme-map-Gujarat-Ahmedabad-ognaj221 -o output
+
+# every map page the site advertises
+tpmap list --out pages.txt
+tpmap fetch --from-file pages.txt -o output --resume
+```
+
+## How it works
+
+The geometry can arrive by any of several routes, so discovery runs four channels at
+once and merges the results:
+
+| Channel | Catches |
+|---|---|
+| `network` | Every response the page fetches, classified by URL, content-type and a peek at the body — KML, KMZ, GeoJSON, Esri JSON, tiles, WMS/WFS. |
+| `init-hook` | Constructors patched *before* page scripts run. `google.maps.KmlLayer` hands its URL to Google's servers, so that KML never appears in the browser's own network log — the hook is the only way to see it. |
+| `source-scan` | Literal `.kml` / `.kmz` references in HTML and JS source, whether or not they are ever fetched. |
+| `page-probe` | Live map objects after load. Leaflet, Mapbox GL / MapLibre, OpenLayers and Google Data layers all hold parsed features in memory, which can be read out directly. |
+
+Everything non-KML is normalised to GeoJSON and written out as KML. Native KML the site
+authored itself is passed through **verbatim**, so its own styling survives.
+
+Because the channels overlap on purpose — a layer fetched over the network is usually
+also sitting parsed in the live map object — identical features are deduplicated before
+writing.
+
+## Output
+
+```
+output/
+├── ognaj221-a1b2c3d4-src1.kml        # the site's own KML, untouched
+├── ognaj221-a1b2c3d4-converted.kml   # GeoJSON/Esri layers converted and merged
+└── _reports/
+    └── ognaj221-a1b2c3d4.json        # every endpoint found, for debugging
+```
+
+Feature attributes are preserved twice over: as `<ExtendedData>` (machine-readable, and
+what QGIS reads into its attribute table) and as an HTML table in `<description>` (what
+Google Earth shows in the balloon). Placemark names are promoted from whichever of
+`name`, `fp_no`, `plot_no`, `survey_no`, `tp_no`… the data provides.
+
+## Commands
+
+```
+tpmap discover URL      what geodata does this page serve?
+tpmap list              enumerate scrapable pages (sitemap, else a link crawl)
+tpmap fetch URL...      download and convert to KML
+```
+
+Useful flags:
+
+| Flag | Effect |
+|---|---|
+| `--headed --wait 60` | Show the browser and keep recording while **you** pan, zoom and toggle layers by hand. The single most effective option when nothing is found automatically. |
+| `--click-layers` | Auto-toggle layer controls to shake loose lazily loaded overlays. |
+| `--arcgis` | If an ArcGIS service is found, page through the **whole** layer instead of just the viewport the map happened to request. |
+| `--split` | One file per layer instead of a merged document. |
+| `--format kmz` | Write KMZ instead of KML. |
+| `--resume` | Skip pages already downloaded. |
+| `--cache DIR` | Cache HTTP bodies so re-runs cost nothing. |
+| `--rate N` | Requests per second per host (default 1.0). |
+
+## Troubleshooting
+
+**"no geodata found on this page"** — the map probably loads on interaction. Run
+`tpmap discover URL --headed --wait 60`, then pan and zoom the map yourself; every
+request you trigger is recorded. Check `_reports/*.json` to see what *was* seen.
+
+**Only tiles were found** (`[tiles]` hits, no vectors) — that layer is rendered
+server-side as images. There is no vector geometry to extract; the underlying data
+would have to come from the source agency.
+
+**An ArcGIS service was found** — re-run with `--arcgis` to export the full layer.
+
+**Chromium won't launch** — set `TPMAP_CHROMIUM` or pass `--browser-path`.
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+python3 -m pytest tests/ -q
+```
+
+The suite runs the real scraper end-to-end against a local fixture site
+(`tests/fixture_site/`) that reproduces each discovery channel — an XHR-loaded GeoJSON
+layer, a `.kml` referenced only in script source, an Esri payload in Web Mercator, and a
+live map object holding parsed features. Serve it by hand with
+`python3 tests/serve_fixture.py 8777`.
+
+## Status
+
+The pipeline is verified end-to-end against the fixture site. It has **not** been run
+against townplanmap.com itself — the sandbox this was built in blocks outbound requests
+to that domain — so the exact endpoint shapes it will meet there are unconfirmed. That is
+why discovery is structured around observing the site rather than assuming its layout,
+and why `tpmap discover` exists: run it first and it will tell you what is really there.
+
+## Please scrape politely
+
+Defaults are conservative: robots.txt is respected, `Crawl-delay` is honoured, requests
+are limited to one per second per host with jittered backoff, and responses already
+captured by the browser are never re-fetched. `--ignore-robots` exists for cases where
+you have permission that robots.txt does not express; using it is your call and your
+responsibility.
+
+Planning-scheme data is generally published by government bodies, but TownPlanMap's
+compilation of it is their work and their terms of use apply. Check them, and don't
+redistribute what you are not entitled to.
