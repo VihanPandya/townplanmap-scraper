@@ -29,6 +29,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def guess_type(self, path):
         if str(path).endswith(".esri.json"):
             return "application/json"
+        if os.path.basename(str(path)) == "home":
+            return "text/html"
         return super().guess_type(path)
 
     def do_GET(self):

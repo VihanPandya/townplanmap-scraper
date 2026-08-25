@@ -205,7 +205,7 @@ def test_redirect_to_a_landing_page_is_reported(site, browser_ok):
     gated = [e for e in report.errors if "redirected to" in e]
     assert gated and "welcome.html" in gated[0]
     # and it must say what to do about it
-    assert "tpmap login" in gated[0]
+    assert "tpmap browser" in gated[0]
 
 
 def test_saved_session_is_loaded(site, tmp_path, browser_ok):
@@ -232,3 +232,19 @@ def test_a_missing_session_file_is_not_fatal(site, tmp_path, browser_ok):
     report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=2.0,
                               storage_state=str(tmp_path / "nope.json"))
     assert [h.kind for h in report.hits] == ["embedded"]
+
+
+def test_redirect_to_app_home_is_reported_as_a_bad_url(site, browser_ok):
+    """Landing on the app's own home page means the session is fine, the URL is not.
+
+    Telling someone to capture a session here -- as an earlier version did --
+    sends them to fix something that is not broken.
+    """
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/tp/tohome.html", wait=2.0)
+    msg = "\n".join(e for e in report.errors if "redirected to" in e)
+    assert msg, report.errors
+    assert "not a real page" in msg
+    assert "--current" in msg
+    assert "session" not in msg.lower()
