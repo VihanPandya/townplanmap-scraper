@@ -183,7 +183,9 @@ def cmd_discover(args) -> int:
                               executable_path=args.browser_path,
                               storage_state=args.session,
                               cdp_url=cdp,
-                              profile_dir=None if cdp else args.profile)
+                              profile_dir=None if cdp else args.profile,
+                              attach_current=getattr(args, "current", False)
+                              and not getattr(args, "reload", False))
     data = report.to_dict()
     if args.json:
         print(json.dumps(data, indent=2))
@@ -280,7 +282,9 @@ def cmd_fetch(args) -> int:
                                    executable_path=args.browser_path,
                                    storage_state=args.session,
                                    cdp_url=cdp,
-                              profile_dir=None if cdp else args.profile)
+                              profile_dir=None if cdp else args.profile,
+                              attach_current=getattr(args, "current", False)
+                              and not getattr(args, "reload", False))
             except Exception as exc:
                 log.exception("harvest failed")
                 print(f"    ! {exc}")
@@ -476,7 +480,9 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("discover", help="report the geodata endpoints a page uses")
     d.add_argument("url", nargs="?")
     d.add_argument("--current", action="store_true",
-                   help="use the page already open in the attached browser")
+                   help="use the page already open in the attached browser, in place")
+    d.add_argument("--reload", action="store_true",
+                   help="with --current, reload the page first")
     d.add_argument("--json", action="store_true", help="machine-readable output")
     d.add_argument("--out", help="also write the report to this file")
     _browser_opts(d)
@@ -496,8 +502,11 @@ def build_parser() -> argparse.ArgumentParser:
     g = sub.add_parser("fetch", help="download KML for one or more pages")
     g.add_argument("urls", nargs="*")
     g.add_argument("--current", action="store_true",
-                   help="scrape the page already open in the attached browser -- "
-                        "navigate to the scheme you want, then run this")
+                   help="scrape the page already open in the attached browser, in "
+                        "place -- whatever you have panned and zoomed to is kept")
+    g.add_argument("--reload", action="store_true",
+                   help="with --current, reload the page first (loses your view, "
+                        "but captures every request from the start)")
     g.add_argument("--all", action="store_true", help="fetch every discoverable map page")
     g.add_argument("--from-file", help="read page URLs from a file, one per line")
     g.add_argument("--base", default=BASE_URL)

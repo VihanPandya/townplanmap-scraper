@@ -235,3 +235,56 @@ def test_open_tab_raises_on_an_unloadable_url(site, user_chrome):
         open_tab(endpoint, "<url it printed>")
     # and a good one still works
     assert open_tab(endpoint, f"{site}/tp/scheme-c.html").endswith("scheme-c.html")
+
+
+def test_current_reads_state_the_user_loaded(site, user_chrome, tmp_path):
+    """A map only fetches what is in view, so reloading throws the plots away.
+
+    lazy.html fetches nothing on load; its features arrive only after the user
+    acts. Attaching in place must see them, reloading must not.
+    """
+    from playwright.sync_api import sync_playwright
+
+    from tpmap.extract import harvest_page
+    endpoint, _ = user_chrome
+    with sync_playwright() as pw:
+        browser = pw.chromium.connect_over_cdp(endpoint)
+        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = ctx.new_page()
+        page.goto(f"{site}/tp/lazy.html", wait_until="domcontentloaded")
+        page.click("#load")
+        page.wait_for_function("document.title === 'loaded'", timeout=10000)
+
+    attached = harvest_page(f"{site}/tp/lazy.html", tmp_path / "attach",
+                            wait=3.0, cdp_url=endpoint, attach_current=True)
+    assert attached.ok, attached.errors
+    assert attached.placemarks == 2
+
+    fresh = harvest_page(f"{site}/tp/lazy.html", tmp_path / "fresh",
+                         wait=3.0, cdp_url=endpoint, attach_current=False)
+    assert not fresh.ok, "a fresh load should not see interaction-loaded data"
+
+
+def test_attaching_does_not_close_the_users_tab(site, user_chrome, tmp_path):
+    from tpmap.discover import current_tab, discover_page
+    endpoint, _ = user_chrome
+    _open_tab(endpoint, f"{site}/tp/scheme-c.html")
+    discover_page(f"{site}/tp/scheme-c.html", wait=2.0, cdp_url=endpoint,
+                  attach_current=True)
+    assert current_tab(endpoint)[0].endswith("scheme-c.html")
+
+
+def test_attach_falls_back_to_a_reload_when_the_tab_yields_nothing(site, user_chrome):
+    """scheme-c fetches its data on load, before we could have attached.
+
+    Attaching alone would see nothing, so the fallback reload must recover it --
+    otherwise --current would be a downgrade for ordinary pages.
+    """
+    from tpmap.discover import discover_page
+    endpoint, _ = user_chrome
+    _open_tab(endpoint, f"{site}/tp/scheme-c.html")
+    report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=2.5,
+                              cdp_url=endpoint, attach_current=True)
+    assert [h.kind for h in report.hits] == ["embedded"]
+    # the complaint from the empty attach pass must not survive
+    assert not any("bytes of HTML" in e for e in report.errors)

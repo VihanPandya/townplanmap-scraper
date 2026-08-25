@@ -137,12 +137,17 @@ tpmap fetch <url> -o output --cdp auto
 
 `--cdp auto` reuses that browser if it is running and starts it if not.
 
-**Don't guess URLs.** Navigate to the scheme you want in that window, then scrape
-whatever is on screen:
+**Don't guess URLs.** Navigate to the scheme you want in that window, zoom to the
+extent you care about, then scrape what is on screen:
 
 ```bash
 tpmap fetch --current -o output --cdp auto
 ```
+
+`--current` reads that tab **in place** — it does not reload. A map only fetches the
+features in view, so reloading would throw away exactly the plots you zoomed to; the
+geometry is read out of the live map objects instead. If the open tab holds nothing
+useful, it falls back to a fresh load automatically. `--reload` forces the fresh load.
 
 `tpmap links --cdp auto` lists the map pages linked from the open page, so you can
 find real scheme URLs instead of inventing them.

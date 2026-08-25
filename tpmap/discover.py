@@ -535,14 +535,21 @@ def _open_context(pw, *, headed, executable_path, storage_state, cdp_url,
     return context, browser.close
 
 
-def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
+def _discover_once(url, *, headed=False, wait=6.0, timeout=45000,
                   user_agent=None, click_layers=False, capture=True,
                   executable_path=None, storage_state=None,
-                  cdp_url=None, profile_dir=None):
-    """Load ``url`` in a browser and report every geodata endpoint it touches.
+                  cdp_url=None, profile_dir=None, attach_current=False):
+    """Report every geodata endpoint a page touches.
 
     Returns ``(Report, {url: body})`` -- bodies are the responses we already
     captured, so the caller can avoid re-fetching them.
+
+    With ``attach_current`` the already-open tab is probed **in place**: no new
+    page, no reload. That matters because a map only fetches what the user has
+    brought into view, so reloading discards the very plots they zoomed to. The
+    trade-off is that requests already completed cannot be replayed, so this
+    leans on reading the live map objects, and on whatever the page fetches
+    while we watch.
     """
     from playwright.sync_api import Error as PWError, TimeoutError as PWTimeout
     from playwright.sync_api import sync_playwright
@@ -614,13 +621,36 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
         except PWError as exc:
             report.errors.append(f"could not start a browser: {exc}")
             return report, bodies
-        context.add_init_script(INIT_SCRIPT)
-        page = context.new_page()
+        page = None
+        if attach_current:
+            try:
+                open_pages = []
+                for ctx in ([context] if not hasattr(context, "browser")
+                            or context.browser is None else context.browser.contexts):
+                    open_pages.extend(ctx.pages)
+                page = next((p for p in open_pages if p.url == url), None)
+            except PWError as exc:
+                log.debug("could not find the open tab: %s", exc)
+            if page is None:
+                report.errors.append(
+                    "could not attach to the open tab; loading the page fresh "
+                    "instead (anything you had panned or zoomed to is lost)")
+
+        attached = page is not None
+        if not attached:
+            # The init hook only applies to pages we create; an existing tab has
+            # already run its scripts.
+            context.add_init_script(INIT_SCRIPT)
+            page = context.new_page()
         page.on("response", on_response)
 
         main_response = None
         try:
-            main_response = page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+            if attached:
+                log.info("watching the open tab for %.0fs -- pan and zoom now", wait)
+            else:
+                main_response = page.goto(url, timeout=timeout,
+                                          wait_until="domcontentloaded")
         except PWTimeout:
             report.errors.append(f"navigation timeout after {timeout}ms")
         except PWError as exc:
@@ -773,10 +803,11 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                 report.add(Hit(url=found, kind=kind, source="source-scan",
                                note="literal reference in page source"))
 
-        try:
-            page.close()
-        except PWError:
-            pass
+        if not attached:
+            try:
+                page.close()
+            except PWError:
+                pass
         close()
 
     return report, bodies
@@ -1009,3 +1040,31 @@ def open_tab(cdp_url: str, url: str) -> str:
                 pass
             raise ValueError(f"could not load {url}: {str(exc)[:200]}")
         return page.url
+
+
+def discover_page(url, **kwargs):
+    """Discover geodata on a page, preferring the tab the user already has open.
+
+    Attaching in place keeps whatever they panned or zoomed to, but cannot see
+    requests that finished before we attached -- which is where a page that
+    loads everything up front keeps its data. So try the open tab first, and
+    fall back to a fresh load when it yields nothing. Neither case is worse
+    than the other alone.
+    """
+    attach = kwargs.pop("attach_current", False)
+    report, bodies = _discover_once(url, attach_current=attach, **kwargs)
+    if not attach or report.hits or report.inline:
+        return report, bodies
+
+    log.info("nothing in the open tab; reloading to capture its requests")
+    fresh, fresh_bodies = _discover_once(url, attach_current=False, **kwargs)
+    for hit in fresh.hits:
+        report.add(hit)
+    report.inline.extend(fresh.inline)
+    report.responses.extend(fresh.responses)
+    report.routes.extend(r for r in fresh.routes if r not in report.routes)
+    bodies.update(fresh_bodies)
+    # The attach pass complains about an empty page; once reloaded that is moot.
+    report.errors = list(fresh.errors) if (fresh.hits or fresh.inline) else (
+        report.errors + [e for e in fresh.errors if e not in report.errors])
+    return report, bodies
