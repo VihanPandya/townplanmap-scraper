@@ -23,6 +23,7 @@ class PageResult:
     placemarks: int = 0
     hits: int = 0
     errors: list[str] = field(default_factory=list)
+    report: object = None          # the raw discovery Report, for diagnostics
 
     @property
     def ok(self) -> bool:
@@ -51,6 +52,7 @@ def harvest_page(page_url, outdir, *, fetcher=None, headed=False, wait=6.0,
         page_url, headed=headed, wait=wait, click_layers=click_layers,
         user_agent=user_agent, executable_path=executable_path)
     result.hits = len(report.hits)
+    result.report = report
     result.errors.extend(report.errors)
 
     stem = url_to_stem(page_url)

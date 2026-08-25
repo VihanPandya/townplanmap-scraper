@@ -52,6 +52,35 @@ def _browser_opts(p: argparse.ArgumentParser) -> None:
 
 # --------------------------------------------------------------------------
 
+def _print_diagnosis(report, indent: str = "  ") -> None:
+    """When nothing was found, show what the page actually did."""
+    responses = report.responses
+    if not responses:
+        print(f"{indent}The browser recorded no responses at all -- the page never "
+              f"loaded. Check the URL and your connection.")
+        return
+
+    print(f"\n{indent}The page made {len(responses)} request(s). Nothing looked like "
+          f"geodata. What it did load:")
+
+    interesting = [r for r in responses
+                   if r.get("type") in ("document", "xhr", "fetch")
+                   or "json" in (r.get("content_type") or "")]
+    shown = interesting or responses
+    for r in shown[:20]:
+        status = r.get("status") or "?"
+        ctype = (r.get("content_type") or "").split(";")[0] or "-"
+        size = r.get("size") or 0
+        print(f"{indent}  {status}  {r.get('type','-'):<9} {ctype:<26} "
+              f"{size / 1024:>6.1f} KB  {r['url'][:88]}")
+    if len(shown) > 20:
+        print(f"{indent}  ... and {len(shown) - 20} more")
+
+    print(f"\n{indent}Next: run with --headed --wait 60, pan and zoom the map, and "
+          f"watch what appears here.")
+    print(f"{indent}Save the full record with --out report.json if you want to share it.")
+
+
 def cmd_discover(args) -> int:
     from .discover import discover_page
 
@@ -78,8 +107,7 @@ def cmd_discover(args) -> int:
         for err in report.errors:
             print(f"  ! {err}")
         if not report.hits and not report.inline:
-            print("\n  Nothing found. Try: --headed --wait 30 (then pan/zoom the map "
-                  "yourself), or --click-layers.")
+            _print_diagnosis(report)
 
     if args.out:
         Path(args.out).write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -155,6 +183,8 @@ def cmd_fetch(args) -> int:
                 failed += 1
                 for err in res.errors[:3]:
                     print(f"    ! {err}")
+                if res.report is not None and not res.report.hits:
+                    _print_diagnosis(res.report, indent="    ")
 
     print(f"\n{done} page(s) yielded KML, {failed} did not.")
     return 0 if done else 1

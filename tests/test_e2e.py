@@ -170,3 +170,27 @@ def test_report_records_responses_for_diagnosis(site, browser_ok):
     assert not report.hits
     assert report.to_dict()["responses_seen"] >= 1
     assert any("about.html" in r["url"] for r in report.to_dict()["responses"])
+
+
+def test_thin_page_is_explained_not_shrugged_at(site, browser_ok):
+    """A blank result must say why, not just report zero."""
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/about.html", wait=1.5)
+    assert not report.hits
+    assert any("bytes of HTML" in e for e in report.errors)
+
+
+def test_responses_carry_status_codes(site, browser_ok):
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=2.0)
+    assert all("status" in r for r in report.responses)
+    assert any(r["status"] == 200 for r in report.responses)
+
+
+def test_missing_page_reports_its_status(site, browser_ok):
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/tp/does-not-exist.html", wait=1.0)
+    assert any("HTTP 404" in e for e in report.errors)

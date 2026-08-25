@@ -47,6 +47,17 @@ SKIP_EXT_RE = re.compile(r"\.(png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|css|mp4)
 # Bodies larger than this are classified but not held in memory.
 MAX_CAPTURE = 32 * 1024 * 1024
 
+# Headless Chrome advertises itself in its UA, and plenty of sites serve those
+# requests a stub page. Present as ordinary desktop Chrome instead.
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+# Signatures of an interstitial served instead of the real page.
+CHALLENGE_RE = re.compile(
+    r"(just a moment|checking your browser|attention required|cf-browser-verification|"
+    r"enable javascript and cookies|access denied|are you a robot|captcha|"
+    r"unusual traffic)", re.I)
+
 
 @dataclass
 class Hit:
@@ -471,6 +482,7 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
             if len(report.responses) < 400:
                 report.responses.append({
                     "url": rurl[:400], "type": rtype, "content_type": ctype,
+                    "status": getattr(response, "status", 0),
                     "size": len(body) if body else 0})
 
             kind = classify(rurl, ctype, body)
@@ -491,19 +503,31 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
         ctx_args = {"ignore_https_errors": True}
         if user_agent:
             ctx_args["user_agent"] = user_agent
+        ctx_args.setdefault("user_agent", BROWSER_UA)
+        ctx_args.setdefault("viewport", {"width": 1440, "height": 900})
+        ctx_args.setdefault("locale", "en-IN")
         context = browser.new_context(**ctx_args)
         context.add_init_script(INIT_SCRIPT)
         page = context.new_page()
         page.on("response", on_response)
 
+        main_response = None
         try:
-            page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+            main_response = page.goto(url, timeout=timeout, wait_until="domcontentloaded")
         except PWTimeout:
             report.errors.append(f"navigation timeout after {timeout}ms")
         except PWError as exc:
             report.errors.append(f"navigation failed: {exc}")
             browser.close()
             return report, bodies
+
+        # Whatever else happens, say plainly if the page itself did not load.
+        if main_response is not None:
+            status = getattr(main_response, "status", 0)
+            if status >= 400:
+                report.errors.append(
+                    f"the page returned HTTP {status} -- check the URL is right "
+                    f"and reachable in a normal browser")
 
         try:
             page.wait_for_load_state("networkidle", timeout=int(wait * 1000))
@@ -587,7 +611,18 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
 
         # -- source scan ----------------------------------------------------
         try:
-            text_blobs.append((url, page.content()))
+            html = page.content()
+            text_blobs.append((url, html))
+            if not report.hits and not report.inline:
+                head = html[:4000]
+                if CHALLENGE_RE.search(head):
+                    report.errors.append(
+                        "the site served a bot-protection interstitial, not the page "
+                        "-- retry with --headed so you can clear it yourself")
+                elif len(html) < 1200:
+                    report.errors.append(
+                        f"the page returned only {len(html)} bytes of HTML; it is "
+                        f"probably rendered after login or by a route this URL misses")
         except PWError:
             pass
         for base, text in text_blobs:
