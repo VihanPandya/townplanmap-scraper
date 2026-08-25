@@ -841,20 +841,29 @@ def save_login_state(url, session_path, *, executable_path=None, timeout=45000,
     return final, warnings
 
 
-# Route-shaped paths worth surfacing as candidate map pages.
+# Route-shaped references worth surfacing as candidate map pages. Sites write
+# these both ways -- a bare path in router data, a full URL in an API reply --
+# so match each.
+_ROUTE_SEGMENT = r"(?:tp|dp|scheme|schemes|map|maps|project|projects)"
 ROUTE_PATH_RE = re.compile(
-    r"[\"'(\s](/(?:tp|dp|scheme|schemes|map|maps|project|projects)/[A-Za-z0-9][^\"'()\s\\]{2,180})",
+    rf"""["'(\s](/{_ROUTE_SEGMENT}/[A-Za-z0-9][^"'()\s\\]{{2,180}})""", re.I)
+ROUTE_URL_RE = re.compile(
+    rf"""(https?://[^"'()\s\\]+/{_ROUTE_SEGMENT}/[A-Za-z0-9][^"'()\s\\]{{2,180}})""",
     re.I)
+_ASSET_SUFFIXES = (".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+                   ".webp", ".woff", ".woff2", ".ico", ".map", ".mp4")
 
 
 def _paths_in_source(html: str, base_url: str) -> list[str]:
-    """Map-page paths mentioned anywhere in the markup or embedded route data."""
+    """Map-page references anywhere in the markup or embedded route data."""
+    text = html or ""
     found = []
-    for match in ROUTE_PATH_RE.finditer(html or ""):
-        path = match.group(1).rstrip(".,;")
-        if path.endswith((".js", ".css", ".png", ".jpg", ".svg", ".webp", ".woff2")):
-            continue
-        found.append(urljoin(base_url, path))
+    for regex in (ROUTE_PATH_RE, ROUTE_URL_RE):
+        for match in regex.finditer(text):
+            ref = match.group(1).rstrip(".,;\"')")
+            if ref.lower().endswith(_ASSET_SUFFIXES):
+                continue
+            found.append(urljoin(base_url, ref))
     return list(dict.fromkeys(found))
 
 

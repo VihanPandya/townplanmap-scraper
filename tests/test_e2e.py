@@ -267,6 +267,19 @@ def test_a_real_scheme_page_is_not_called_a_shell(site, browser_ok):
     assert not any("home screen" in e for e in report.errors)
 
 
+def test_absolute_route_urls_are_found_too():
+    """API replies carry full URLs; router data carries bare paths. Match both."""
+    from tpmap.discover import _paths_in_source
+    real = ("https://townplanmap.com/tp/"
+            "town-planning-scheme-map--Gujarat--Ahmedabad--Dholera-1A3_1A3/")
+    src = f'{{"a":"{real}","b":"/tp/other-scheme/","c":"/tp/chunk.js",'\
+          f'"d":"https://cdn.example/maps/app.css"}}'
+    found = _paths_in_source(src, "https://townplanmap.com/home")
+    assert real in found
+    assert "https://townplanmap.com/tp/other-scheme/" in found
+    assert not any(f.endswith((".js", ".css")) for f in found)
+
+
 def test_routes_are_found_in_page_source_not_just_anchors():
     """Single-page apps route by script, so <a href> misses most destinations."""
     from tpmap.discover import _paths_in_source
