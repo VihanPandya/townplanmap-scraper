@@ -50,6 +50,13 @@ def _browser_opts(p: argparse.ArgumentParser) -> None:
                    help="Chromium/Chrome binary to drive (also honours $TPMAP_CHROMIUM)")
     p.add_argument("--session", default=None, metavar="FILE",
                    help="saved session from `tpmap login`, for pages behind a sign-in")
+    p.add_argument("--cdp", default=None, metavar="URL",
+                   help="attach to a Chrome you started yourself, e.g. "
+                        "http://localhost:9222 -- the reliable way past logins that "
+                        "refuse to run under automation")
+    p.add_argument("--profile", default=None, metavar="DIR",
+                   help="drive a real Chrome profile directory (Chrome must be "
+                        "closed), reusing a session you are already signed into")
 
 
 # --------------------------------------------------------------------------
@@ -90,7 +97,8 @@ def cmd_discover(args) -> int:
                               click_layers=args.click_layers,
                               user_agent=args.user_agent,
                               executable_path=args.browser_path,
-                              storage_state=args.session)
+                              storage_state=args.session,
+                              cdp_url=args.cdp, profile_dir=args.profile)
     data = report.to_dict()
     if args.json:
         print(json.dumps(data, indent=2))
@@ -171,7 +179,8 @@ def cmd_fetch(args) -> int:
                                    split=args.split, fmt=args.format,
                                    arcgis=args.arcgis, user_agent=args.user_agent,
                                    executable_path=args.browser_path,
-                                   storage_state=args.session)
+                                   storage_state=args.session,
+                                   cdp_url=args.cdp, profile_dir=args.profile)
             except Exception as exc:
                 log.exception("harvest failed")
                 print(f"    ! {exc}")
@@ -206,10 +215,13 @@ def cmd_login(args) -> int:
     """Capture a signed-in browser session for later runs."""
     from .discover import save_login_state
 
-    final = save_login_state(args.url, args.session,
-                             executable_path=args.browser_path)
+    final, warnings = save_login_state(
+        args.url, args.session, executable_path=args.browser_path,
+        cdp_url=args.cdp, profile_dir=args.profile)
     print(f"\nsession saved to {args.session} (ended on {final})")
-    print(f"now run:  tpmap fetch \"{args.url}\" -o output --session {args.session}")
+    for w in warnings:
+        print(f"\n  ! {w}")
+    print(f"\nnow run:  tpmap fetch \"{args.url}\" -o output --session {args.session}")
     return 0
 
 
@@ -351,6 +363,10 @@ def build_parser() -> argparse.ArgumentParser:
     lg.add_argument("--session", default="session.json",
                     help="where to save the session (default: session.json)")
     lg.add_argument("--browser-path", default=None, metavar="EXE")
+    lg.add_argument("--cdp", default=None, metavar="URL",
+                    help="attach to a Chrome you started yourself")
+    lg.add_argument("--profile", default=None, metavar="DIR",
+                    help="use a real Chrome profile directory")
     lg.add_argument("-v", "--verbose", action="count", default=0)
     lg.set_defaults(func=cmd_login)
 

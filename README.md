@@ -111,22 +111,53 @@ Google Earth shows in the balloon). Placemark names are promoted from whichever 
 ## Pages behind a sign-in
 
 If `discover` reports **"redirected to …"**, the page is gated and no amount of
-waiting will produce a map. Sign in once and reuse the session:
+waiting will produce a map.
+
+**Use your own Chrome.** Logins that rely on reCAPTCHA or SMS OTP — Firebase phone
+auth among them — frequently stall in an automation-controlled browser: the OTP
+never sends. And Firebase Auth keeps its token in **IndexedDB**, which a saved
+session file cannot carry. Both problems disappear if you drive the browser you
+already signed into.
+
+**Option A — attach to a running Chrome (recommended).** Start Chrome yourself with
+remote debugging, sign in normally, leave it open:
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+```
+
+```bash
+# macOS
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222
+```
+
+Then point the scraper at it. Nothing is automated at launch, so the login behaves
+exactly as it does by hand:
+
+```bash
+tpmap fetch <url> -o output --cdp http://localhost:9222
+```
+
+Your browser is never closed by the tool.
+
+**Option B — reuse a profile on disk.** Quit Chrome completely, then:
+
+```bash
+tpmap fetch <url> -o output --profile "C:\Users\you\AppData\Local\Google\Chrome\User Data"
+```
+
+**Option C — a saved session file.** Works for ordinary cookie logins, not for
+Firebase:
 
 ```bash
 tpmap login https://townplanmap.com --session session.json
-```
-
-A real browser opens. You sign in with your own account, load a scheme map, then
-press Enter — only the resulting cookies and local storage are saved. Then:
-
-```bash
-tpmap discover <url> --session session.json
 tpmap fetch <url> -o output --session session.json
 ```
 
-Nothing about this bypasses authentication: you log in as yourself, exactly as you
-would by hand. Keep `session.json` out of version control — it is a live credential.
+`tpmap login` warns you if it detects a Firebase login it cannot carry.
+
+None of this bypasses authentication — you sign in as yourself, exactly as you would
+by hand. Keep `session.json` and profile directories out of version control.
 
 ## Converting JSON you already have
 

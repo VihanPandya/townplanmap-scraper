@@ -42,7 +42,8 @@ def _body_for(hit, bodies, fetcher):
 def harvest_page(page_url, outdir, *, fetcher=None, headed=False, wait=6.0,
                  click_layers=False, split=False, fmt="kml",
                  arcgis=False, save_report=True, user_agent=None,
-                 executable_path=None, latlon=False, storage_state=None) -> PageResult:
+                 executable_path=None, latlon=False, storage_state=None,
+                 cdp_url=None, profile_dir=None) -> PageResult:
     """Discover, download and convert everything geodata-shaped on one page."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -51,7 +52,7 @@ def harvest_page(page_url, outdir, *, fetcher=None, headed=False, wait=6.0,
     report, bodies = discover_page(
         page_url, headed=headed, wait=wait, click_layers=click_layers,
         user_agent=user_agent, executable_path=executable_path,
-        storage_state=storage_state)
+        storage_state=storage_state, cdp_url=cdp_url, profile_dir=profile_dir)
     result.hits = len(report.hits)
     result.report = report
     result.errors.extend(report.errors)

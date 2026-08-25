@@ -437,9 +437,62 @@ def chromium_executable() -> str | None:
     return None
 
 
+
+def _open_context(pw, *, headed, executable_path, storage_state, cdp_url,
+                  profile_dir, user_agent):
+    """Return (context, close_fn).
+
+    Three ways in, in order of fidelity:
+
+    cdp_url      attach to a Chrome the user started themselves. Nothing is
+                 automated at launch, so logins that refuse to run under
+                 automation (reCAPTCHA, Firebase phone auth) work normally, and
+                 IndexedDB -- where Firebase Auth actually keeps its token --
+                 is live rather than needing to be serialised.
+    profile_dir  drive a real Chrome profile on disk, so an existing signed-in
+                 session is reused with no login at all. Chrome must be closed.
+    otherwise    a clean throwaway browser, optionally seeded with a saved
+                 storage_state.
+    """
+    ctx_args = {
+        "ignore_https_errors": True,
+        "user_agent": user_agent or BROWSER_UA,
+        "viewport": {"width": 1440, "height": 900},
+        "locale": "en-IN",
+    }
+
+    if cdp_url:
+        browser = pw.chromium.connect_over_cdp(cdp_url)
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        log.info("attached to your browser at %s", cdp_url)
+        # Never close a browser we did not start.
+        return context, (lambda: None)
+
+    if profile_dir:
+        launch = {"headless": not headed}
+        if executable_path:
+            launch["executable_path"] = executable_path
+        context = pw.chromium.launch_persistent_context(
+            str(profile_dir), **launch, **ctx_args)
+        log.info("using Chrome profile %s", profile_dir)
+        return context, context.close
+
+    launch = {"headless": not headed}
+    exe = executable_path or chromium_executable()
+    if exe:
+        launch["executable_path"] = exe
+    browser = pw.chromium.launch(**launch)
+    if storage_state and os.path.exists(str(storage_state)):
+        ctx_args["storage_state"] = str(storage_state)
+        log.info("using saved session %s", storage_state)
+    context = browser.new_context(**ctx_args)
+    return context, browser.close
+
+
 def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                   user_agent=None, click_layers=False, capture=True,
-                  executable_path=None, storage_state=None):
+                  executable_path=None, storage_state=None,
+                  cdp_url=None, profile_dir=None):
     """Load ``url`` in a browser and report every geodata endpoint it touches.
 
     Returns ``(Report, {url: body})`` -- bodies are the responses we already
@@ -495,21 +548,14 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
             log.debug("response handler error: %s", exc)
 
     with sync_playwright() as pw:
-        launch_args = {"headless": not headed}
-        exe = executable_path or chromium_executable()
-        if exe:
-            launch_args["executable_path"] = exe
-        browser = pw.chromium.launch(**launch_args)
-        ctx_args = {"ignore_https_errors": True}
-        if user_agent:
-            ctx_args["user_agent"] = user_agent
-        if storage_state and os.path.exists(str(storage_state)):
-            ctx_args["storage_state"] = str(storage_state)
-            log.info("using saved session %s", storage_state)
-        ctx_args.setdefault("user_agent", BROWSER_UA)
-        ctx_args.setdefault("viewport", {"width": 1440, "height": 900})
-        ctx_args.setdefault("locale", "en-IN")
-        context = browser.new_context(**ctx_args)
+        try:
+            context, close = _open_context(
+                pw, headed=headed, executable_path=executable_path,
+                storage_state=storage_state, cdp_url=cdp_url,
+                profile_dir=profile_dir, user_agent=user_agent)
+        except PWError as exc:
+            report.errors.append(f"could not start a browser: {exc}")
+            return report, bodies
         context.add_init_script(INIT_SCRIPT)
         page = context.new_page()
         page.on("response", on_response)
@@ -521,7 +567,7 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
             report.errors.append(f"navigation timeout after {timeout}ms")
         except PWError as exc:
             report.errors.append(f"navigation failed: {exc}")
-            browser.close()
+            close()
             return report, bodies
 
         # Whatever else happens, say plainly if the page itself did not load.
@@ -646,31 +692,32 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                 report.add(Hit(url=found, kind=kind, source="source-scan",
                                note="literal reference in page source"))
 
-        browser.close()
+        try:
+            page.close()
+        except PWError:
+            pass
+        close()
 
     return report, bodies
 
 
-def save_login_state(url, session_path, *, executable_path=None, timeout=45000):
-    """Open a real browser so the user can sign in, then persist the session.
+def save_login_state(url, session_path, *, executable_path=None, timeout=45000,
+                     cdp_url=None, profile_dir=None):
+    """Open a browser so the user can sign in, then persist the session.
 
-    Nothing is automated here: the person logs in themselves with their own
-    credentials, and only the resulting cookies and local storage are saved for
-    later runs.
+    Nothing is automated: the person logs in themselves with their own
+    credentials, and only the resulting cookies and storage are saved.
     """
     from playwright.sync_api import Error as PWError
     from playwright.sync_api import sync_playwright
 
+    warnings = []
     with sync_playwright() as pw:
-        launch_args = {"headless": False}
-        exe = executable_path or chromium_executable()
-        if exe:
-            launch_args["executable_path"] = exe
-        browser = pw.chromium.launch(**launch_args)
-        context = browser.new_context(user_agent=BROWSER_UA,
-                                      viewport={"width": 1440, "height": 900},
-                                      locale="en-IN")
-        page = context.new_page()
+        context, close = _open_context(
+            pw, headed=True, executable_path=executable_path, storage_state=None,
+            cdp_url=cdp_url, profile_dir=profile_dir, user_agent=None)
+        pages = getattr(context, "pages", None) or []
+        page = pages[0] if (cdp_url and pages) else context.new_page()
         try:
             page.goto(url, timeout=timeout, wait_until="domcontentloaded")
         except PWError as exc:
@@ -689,7 +736,25 @@ def save_login_state(url, session_path, *, executable_path=None, timeout=45000):
             final = page.url
         except PWError:
             final = url
-        context.storage_state(path=str(session_path))
-        browser.close()
 
-    return final
+        # Firebase Auth keeps its token in IndexedDB, which storage_state does
+        # not capture -- saying so now beats a mystifying failure later.
+        try:
+            dbs = page.evaluate(
+                "async () => (indexedDB.databases ? (await indexedDB.databases())"
+                ".map(d => d.name || '') : [])")
+        except PWError:
+            dbs = []
+        if any("firebase" in str(d).lower() for d in dbs) and not profile_dir:
+            warnings.append(
+                "This site keeps its login in IndexedDB (Firebase Auth), which a "
+                "saved session file cannot carry. Use --profile or --cdp instead; "
+                "see the README section on pages behind a sign-in.")
+
+        try:
+            context.storage_state(path=str(session_path))
+        except PWError as exc:
+            warnings.append(f"could not write the session file: {exc}")
+        close()
+
+    return final, warnings
