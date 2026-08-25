@@ -21,7 +21,7 @@ def fetcher():
 def test_sitemap_listing_finds_only_map_pages(site, fetcher):
     urls = discover_pages(fetcher, site + "/")
     assert sorted(urls) == [f"{site}/tp/scheme-a.html", f"{site}/tp/scheme-b.html",
-                            f"{site}/tp/scheme-c.html"]
+                            f"{site}/tp/scheme-c.html", f"{site}/tp/scheme-d.html"]
 
 
 def test_link_crawl_fallback_reaches_scheme_pages(site, fetcher):
@@ -125,3 +125,48 @@ def test_envelope_endpoint_is_classified_as_embedded(site, browser_ok):
         pytest.skip("no usable chromium")
     report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=2.5)
     assert [h.kind for h in report.hits] == ["embedded"]
+
+
+def test_cross_origin_iframe_does_not_break_the_probe(site, browser_ok):
+    """A cross-origin frame threw SecurityError and killed the whole probe.
+
+    Reading any property of an opaque-origin Window raises, and one uncaught
+    throw aborted the probe for the entire page.
+    """
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/tp/scheme-d.html", wait=2.5)
+    assert not [e for e in report.errors if "page probe failed" in e]
+    assert not [e for e in report.errors if "SecurityError" in e]
+
+
+def test_inline_next_data_is_extracted(site, tmp_path, browser_ok, fetcher):
+    """Server-rendered page data is never fetched, so no network hit exists."""
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    res = harvest_page(f"{site}/tp/scheme-d.html", tmp_path, fetcher=fetcher, wait=2.5)
+    assert res.ok, res.errors
+    assert res.placemarks == 2
+    root = ET.parse(res.files[0]).getroot()
+    assert [e.text for e in root.findall(".//k:Placemark/k:name", NS)] == \
+        ["FP-201", "FP-202"]
+
+
+def test_inline_json_hits_are_not_fetched(site, browser_ok):
+    """Their pseudo-URL points at the HTML page; downloading it is nonsense."""
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/tp/scheme-d.html", wait=2.5)
+    inline_hits = [h for h in report.hits if h.source == "inline-json"]
+    assert inline_hits and "__NEXT_DATA__" in inline_hits[0].url
+    assert all(h.source != "inline-json" for h in report.downloadable())
+
+
+def test_report_records_responses_for_diagnosis(site, browser_ok):
+    """A run that finds nothing must still be diagnosable from the report."""
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/about.html", wait=1.5)
+    assert not report.hits
+    assert report.to_dict()["responses_seen"] >= 1
+    assert any("about.html" in r["url"] for r in report.to_dict()["responses"])

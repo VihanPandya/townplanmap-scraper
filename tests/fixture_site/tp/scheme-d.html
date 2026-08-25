@@ -1,0 +1,16 @@
+<!doctype html><meta charset=utf-8><title>Scheme D</title>
+<!-- A data: URL iframe has an opaque origin, so reading any property of its
+     Window from here throws SecurityError -- the exact crash seen in the wild. -->
+<iframe name="xframe" src="data:text/html,<p>cross origin</p>"></iframe>
+<div id="map"></div>
+<!-- Server-rendered page data: never fetched, so no network channel sees it. -->
+<script id="__NEXT_DATA__" type="application/json">
+{"props":{"pageProps":{"scheme":{"tp_no":"221","village":"Ognaj","plots":[
+  {"fp_no":"FP-201","zone":"Residential","area_sqm":1200,
+   "boundary":[{"lat":23.020,"lng":72.520},{"lat":23.020,"lng":72.525},
+               {"lat":23.025,"lng":72.525},{"lat":23.020,"lng":72.520}]},
+  {"fp_no":"FP-202","zone":"Industrial","area_sqm":3400,
+   "boundary":[{"lat":23.030,"lng":72.520},{"lat":23.030,"lng":72.525},
+               {"lat":23.035,"lng":72.525},{"lat":23.030,"lng":72.520}]}
+]}}},"page":"/tp/[slug]"}
+</script>

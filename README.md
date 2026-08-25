@@ -10,13 +10,33 @@ drives a real browser and watches what the page itself loads.
 
 ## Install
 
+**Linux / macOS**
+
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium        # skip if you already have a Chromium/Chrome to point at
-pip install -e .                   # optional, provides the `tpmap` command
+pip install -e .
+playwright install chromium
 ```
 
-Without `pip install -e .`, run it as `python3 -m tpmap` everywhere below.
+**Windows (PowerShell)** — use `py`, not `python3`, and note the different
+activate command:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -e .
+playwright install chromium
+```
+
+If `Activate.ps1` is blocked by execution policy, either run
+`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first, or use
+`.\.venv\Scripts\activate.bat`. Skipping the venv entirely also works — the tool
+just installs into your global Python.
+
+Without `pip install -e .`, run it as `python -m tpmap` everywhere below.
 
 Already have a browser? Skip the download and point at it:
 
@@ -63,7 +83,8 @@ once and merges the results:
 | `network` | Every response the page fetches, classified by URL, content-type and a peek at the body — KML, KMZ, GeoJSON, Esri JSON, tiles, WMS/WFS. |
 | `init-hook` | Constructors patched *before* page scripts run. `google.maps.KmlLayer` hands its URL to Google's servers, so that KML never appears in the browser's own network log — the hook is the only way to see it. |
 | `source-scan` | Literal `.kml` / `.kmz` references in HTML and JS source, whether or not they are ever fetched. |
-| `page-probe` | Live map objects after load. Leaflet, Mapbox GL / MapLibre, OpenLayers and Google Data layers all hold parsed features in memory, which can be read out directly. |
+| `page-probe` | Live map objects after load, in **every frame**. Leaflet, Mapbox GL / MapLibre, OpenLayers and Google Data layers all hold parsed features in memory. Every property read is guarded: touching a cross-origin iframe's `Window` throws, and one uncaught throw would lose the whole channel. |
+| `inline-json` | Page data embedded in the HTML — `__NEXT_DATA__`, `__NUXT__`, `__INITIAL_STATE__`, `<script type="application/json">`. Server-rendered apps never fetch this, so watching the network will never see it. |
 
 Everything non-KML is normalised to GeoJSON and written out as KML. Native KML the site
 authored itself is passed through **verbatim**, so its own styling survives.
@@ -140,6 +161,10 @@ Useful flags:
 found, not your data**. Getting one on its own means no KML was produced; open it and
 look at `hits`. If it lists a `geojson`/`embedded`/`esri` endpoint, fetch that URL
 directly and run `tpmap convert` on it. If `hits` is empty, see the next entry.
+
+**Nothing found at all** — open `output/_reports/<name>.json`. It lists every
+response the page made (`responses`), so you can see whether the page even loaded and
+what it pulled. Send that file if you want help reading it.
 
 **"no geodata found on this page"** — the map probably loads on interaction. Run
 `tpmap discover URL --headed --wait 60`, then pan and zoom the map yourself; every

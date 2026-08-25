@@ -54,7 +54,8 @@ class Hit:
     url: str
     kind: str                 # kml | kmz | geojson | esri | embedded | arcgis-service |
                               # ogc-service | tiles
-    source: str               # network | init-hook | source-scan | page-probe
+    source: str               # network | init-hook | source-scan | page-probe |
+                              # inline-json
     content_type: str = ""
     size: int = 0
     note: str = ""
@@ -69,6 +70,9 @@ class Report:
     hits: list[Hit] = field(default_factory=list)
     inline: list[dict] = field(default_factory=list)   # GeoJSON lifted straight from the page
     errors: list[str] = field(default_factory=list)
+    # Everything the page loaded, kept so a run that finds nothing can still be
+    # diagnosed from the report alone.
+    responses: list[dict] = field(default_factory=list)
 
     def add(self, hit: Hit) -> None:
         if all(hit.key() != h.key() for h in self.hits):
@@ -78,9 +82,15 @@ class Report:
         return [h for h in self.hits if h.kind in kinds]
 
     def downloadable(self) -> list[Hit]:
-        """Hits we can turn into KML by a plain GET, best format first."""
+        """Hits we can turn into KML by a plain GET, best format first.
+
+        Inline-JSON hits are markers for the report: their content came from the
+        page body and is already in ``inline``, and their pseudo-URL points at
+        the HTML page, not at anything fetchable.
+        """
         order = {"kml": 0, "kmz": 1, "geojson": 2, "esri": 3, "embedded": 4}
-        return sorted((h for h in self.hits if h.kind in order),
+        return sorted((h for h in self.hits
+                       if h.kind in order and h.source != "inline-json"),
                       key=lambda h: order[h.kind])
 
     def to_dict(self) -> dict:
@@ -90,6 +100,8 @@ class Report:
             "inline_layers": len(self.inline),
             "inline_features": sum(len(l.get("features", [])) for l in self.inline),
             "errors": self.errors,
+            "responses_seen": len(self.responses),
+            "responses": self.responses[:200],
         }
 
 
@@ -208,112 +220,179 @@ INIT_SCRIPT = r"""
 """
 
 # Run after load: interrogate whatever mapping library is actually in use.
+#
+# Every property access here is guarded. Touching any property of a cross-origin
+# iframe's Window throws SecurityError, and one uncaught throw would abort the
+# whole probe and lose the channel -- so `safe()` wraps all of it.
 PROBE_SCRIPT = r"""
 () => {
   const result = { layers: [], urls: [], libs: [] };
+  const safe = (obj, prop) => { try { return obj[prop]; } catch (e) { return undefined; } };
+  const callSafe = (obj, method, ...args) => {
+    try {
+      const fn = obj[method];
+      if (typeof fn !== 'function') return undefined;
+      return fn.apply(obj, args);
+    } catch (e) { return undefined; }
+  };
   const push = (gj) => {
-    if (!gj) return;
-    if (gj.type === 'FeatureCollection' && (!gj.features || !gj.features.length)) return;
-    result.layers.push(gj);
+    try {
+      if (!gj || typeof gj !== 'object') return;
+      if (gj.type === 'FeatureCollection' && (!gj.features || !gj.features.length)) return;
+      result.layers.push(gj);
+    } catch (e) {}
+  };
+
+  // A cross-origin Window throws on any property read; weed those out up front.
+  const usable = (v) => {
+    try {
+      if (v === null || typeof v !== 'object') return false;
+      void v.constructor;          // throws for cross-origin frames
+      return true;
+    } catch (e) { return false; }
   };
 
   const roots = [];
-  for (const k of Object.getOwnPropertyNames(window)) {
-    let v; try { v = window[k]; } catch (e) { continue; }
-    if (v && typeof v === 'object') roots.push(v);
+  let names = [];
+  try { names = Object.getOwnPropertyNames(window); } catch (e) { names = []; }
+  for (const k of names) {
+    const v = safe(window, k);
+    if (usable(v)) roots.push(v);
   }
 
   // --- Leaflet -----------------------------------------------------------
-  if (window.L) {
+  if (safe(window, 'L')) {
     result.libs.push('leaflet');
     for (const v of roots) {
-      if (!v || !v._layers || !v._container || typeof v.eachLayer !== 'function') continue;
-      try {
-        v.eachLayer((layer) => {
-          try {
-            if (typeof layer.toGeoJSON === 'function') push(layer.toGeoJSON());
-            if (layer._url) result.urls.push(String(layer._url));
-          } catch (e) {}
-        });
-      } catch (e) {}
+      if (!safe(v, '_layers') || !safe(v, '_container')) continue;
+      if (typeof safe(v, 'eachLayer') !== 'function') continue;
+      callSafe(v, 'eachLayer', (layer) => {
+        if (!usable(layer)) return;
+        const gj = callSafe(layer, 'toGeoJSON');
+        if (gj) push(gj);
+        const u = safe(layer, '_url');
+        if (u) result.urls.push(String(u));
+      });
     }
   }
 
   // --- Mapbox GL / MapLibre ---------------------------------------------
   for (const v of roots) {
-    if (!v || typeof v.getStyle !== 'function' || typeof v.queryRenderedFeatures !== 'function') continue;
+    if (typeof safe(v, 'getStyle') !== 'function') continue;
+    if (typeof safe(v, 'queryRenderedFeatures') !== 'function') continue;
     result.libs.push('mapbox-gl');
-    let style; try { style = v.getStyle(); } catch (e) { continue; }
-    for (const [id, src] of Object.entries((style && style.sources) || {})) {
-      if (!src) continue;
-      if (typeof src.data === 'string') result.urls.push(src.data);
-      else if (src.data) push(src.data);
-      if (src.url) result.urls.push(src.url);
-      for (const t of (src.tiles || [])) result.urls.push(t);
+    const style = callSafe(v, 'getStyle');
+    const sources = safe(style || {}, 'sources') || {};
+    let entries = [];
+    try { entries = Object.entries(sources); } catch (e) { entries = []; }
+    for (const [, src] of entries) {
+      if (!usable(src)) continue;
+      const data = safe(src, 'data');
+      if (typeof data === 'string') result.urls.push(data);
+      else if (data) push(data);
+      const u = safe(src, 'url');
+      if (u) result.urls.push(String(u));
+      const tiles = safe(src, 'tiles') || [];
+      try { for (const t of tiles) result.urls.push(String(t)); } catch (e) {}
     }
   }
 
   // --- Google Maps Data layer -------------------------------------------
-  if (window.google && window.google.maps) {
+  if (safe(safe(window, 'google') || {}, 'maps')) {
     result.libs.push('google-maps');
     for (const v of roots) {
-      if (!v || !v.data || typeof v.data.forEach !== 'function') continue;
+      const data = safe(v, 'data');
+      if (!usable(data) || typeof safe(data, 'forEach') !== 'function') continue;
       const feats = [];
-      try {
-        v.data.forEach((f) => {
-          try {
-            const geom = f.getGeometry(); if (!geom) return;
-            const props = {};
-            f.forEachProperty((val, key) => { props[key] = val; });
-            const coordsOf = (g) => {
-              const t = g.getType();
-              if (t === 'Point') { const p = g.get(); return [p.lng(), p.lat()]; }
-              if (t === 'LineString' || t === 'LinearRing')
-                return g.getArray().map((p) => [p.lng(), p.lat()]);
-              if (t === 'Polygon' || t === 'MultiLineString' || t === 'MultiPoint')
-                return g.getArray().map(coordsOf);
-              if (t === 'MultiPolygon') return g.getArray().map(coordsOf);
-              return null;
-            };
-            const c = coordsOf(geom);
-            if (c) feats.push({ type: 'Feature', properties: props,
-                                geometry: { type: geom.getType(), coordinates: c } });
-          } catch (e) {}
-        });
-      } catch (e) {}
+      callSafe(data, 'forEach', (f) => {
+        const geom = callSafe(f, 'getGeometry');
+        if (!geom) return;
+        const props = {};
+        callSafe(f, 'forEachProperty', (val, key) => { props[key] = val; });
+        const coordsOf = (g) => {
+          const t = callSafe(g, 'getType');
+          if (t === 'Point') {
+            const p = callSafe(g, 'get');
+            return p ? [callSafe(p, 'lng'), callSafe(p, 'lat')] : null;
+          }
+          const arr = callSafe(g, 'getArray');
+          if (!arr) return null;
+          if (t === 'LineString' || t === 'LinearRing')
+            return arr.map((p) => [callSafe(p, 'lng'), callSafe(p, 'lat')]);
+          return arr.map(coordsOf);
+        };
+        const c = coordsOf(geom);
+        const t = callSafe(geom, 'getType');
+        if (c && t) feats.push({ type: 'Feature', properties: props,
+                                 geometry: { type: t, coordinates: c } });
+      });
       if (feats.length) push({ type: 'FeatureCollection', features: feats });
     }
   }
 
   // --- OpenLayers --------------------------------------------------------
-  if (window.ol) {
+  const ol = safe(window, 'ol');
+  if (ol) {
     result.libs.push('openlayers');
-    try {
-      const fmt = new window.ol.format.GeoJSON();
-      for (const v of roots) {
-        if (!v || typeof v.getLayers !== 'function') continue;
-        v.getLayers().forEach((layer) => {
+    let fmt = null;
+    try { fmt = new ol.format.GeoJSON(); } catch (e) { fmt = null; }
+    for (const v of roots) {
+      if (typeof safe(v, 'getLayers') !== 'function' || !fmt) continue;
+      const layers = callSafe(v, 'getLayers');
+      callSafe(layers, 'forEach', (layer) => {
+        const src = callSafe(layer, 'getSource');
+        if (!usable(src)) return;
+        const fs = callSafe(src, 'getFeatures');
+        if (fs && fs.length) {
           try {
-            const src = layer.getSource && layer.getSource();
-            if (src && typeof src.getFeatures === 'function') {
-              const fs = src.getFeatures();
-              if (fs && fs.length) push(JSON.parse(fmt.writeFeatures(fs, {
-                featureProjection: 'EPSG:3857', dataProjection: 'EPSG:4326' })));
-            }
-            if (src && typeof src.getUrl === 'function') {
-              const u = src.getUrl(); if (typeof u === 'string') result.urls.push(u);
-            }
+            push(JSON.parse(fmt.writeFeatures(fs, {
+              featureProjection: 'EPSG:3857', dataProjection: 'EPSG:4326' })));
           } catch (e) {}
-        });
-      }
-    } catch (e) {}
+        }
+        const u = callSafe(src, 'getUrl');
+        if (typeof u === 'string') result.urls.push(u);
+      });
+    }
   }
 
-  const t = window.__tpmap || {};
-  result.urls = result.urls.concat(t.kmlUrls || [], t.dataUrls || []);
-  result.libs = Array.from(new Set(result.libs));
-  result.urls = Array.from(new Set(result.urls.filter(Boolean)));
+  const t = safe(window, '__tpmap') || {};
+  try { result.urls = result.urls.concat(t.kmlUrls || [], t.dataUrls || []); } catch (e) {}
+  try {
+    result.libs = Array.from(new Set(result.libs));
+    result.urls = Array.from(new Set(result.urls.filter(Boolean)));
+  } catch (e) {}
   return result;
+}
+"""
+
+# Server-rendered apps (Next.js, Nuxt, Remix...) ship their page data as inline
+# JSON rather than fetching it, so no amount of network watching will see it.
+INLINE_JSON_SCRIPT = r"""
+() => {
+  const out = [];
+  const push = (source, text) => {
+    try {
+      if (typeof text === 'string' && text.length > 40 && text.length < 20000000)
+        out.push({ source: source, text: text });
+    } catch (e) {}
+  };
+  try {
+    for (const s of document.querySelectorAll('script')) {
+      const type = (s.getAttribute('type') || '').toLowerCase();
+      const id = s.getAttribute('id') || '';
+      if (type.indexOf('json') !== -1 || id === '__NEXT_DATA__')
+        push(id || type || 'inline-script', s.textContent);
+    }
+  } catch (e) {}
+  for (const key of ['__NEXT_DATA__', '__NUXT__', '__INITIAL_STATE__',
+                     '__APOLLO_STATE__', '__remixContext', '__SERVER_DATA__',
+                     '__staticRouterHydrationData', '__PRELOADED_STATE__']) {
+    try {
+      const v = window[key];
+      if (v) push('window.' + key, JSON.stringify(v));
+    } catch (e) {}
+  }
+  return out;
 }
 """
 
@@ -389,6 +468,11 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                 if len(body) < 8 * 1024 * 1024:
                     text_blobs.append((rurl, body.decode("utf-8", errors="replace")))
 
+            if len(report.responses) < 400:
+                report.responses.append({
+                    "url": rurl[:400], "type": rtype, "content_type": ctype,
+                    "size": len(body) if body else 0})
+
             kind = classify(rurl, ctype, body)
             if kind:
                 report.add(Hit(url=rurl, kind=kind, source="network",
@@ -447,14 +531,22 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
 
         page.wait_for_timeout(int(wait * 1000))
 
-        # -- page probe -----------------------------------------------------
+        # -- page probe, across every frame ---------------------------------
+        # The map is often inside an iframe, so the main frame alone is not enough.
+        frames = [page]
         try:
-            probe = page.evaluate(PROBE_SCRIPT)
-        except PWError as exc:
-            probe = None
-            report.errors.append(f"page probe failed: {exc}")
+            frames += [f for f in page.frames if f is not page.main_frame]
+        except PWError:
+            pass
 
-        if probe:
+        for frame in frames:
+            try:
+                probe = frame.evaluate(PROBE_SCRIPT)
+            except PWError as exc:
+                report.errors.append(f"page probe failed: {str(exc)[:200]}")
+                continue
+            if not probe:
+                continue
             if probe.get("libs"):
                 log.info("map libraries detected: %s", ", ".join(probe["libs"]))
             for layer in probe.get("layers", []):
@@ -465,6 +557,33 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                 kind = classify(absolute) or "geojson"
                 report.add(Hit(url=absolute, kind=kind, source="init-hook",
                                note="referenced by in-page map object"))
+
+        # -- inline JSON (Next.js and friends embed page data, never fetch it) --
+        from .coerce import coerce_to_feature_collection
+        from .kml import ConversionError
+
+        for frame in frames:
+            try:
+                blocks = frame.evaluate(INLINE_JSON_SCRIPT) or []
+            except PWError as exc:
+                report.errors.append(f"inline json scan failed: {str(exc)[:200]}")
+                continue
+            for block in blocks:
+                text = block.get("text") or ""
+                try:
+                    obj = json.loads(text)
+                except ValueError:
+                    continue
+                try:
+                    fc = coerce_to_feature_collection(obj)
+                except ConversionError:
+                    continue
+                log.info("inline JSON %s -> %d feature(s)",
+                         block.get("source"), len(fc["features"]))
+                report.inline.append(fc)
+                report.add(Hit(url=f"{url}#{block.get('source')}", kind="embedded",
+                               source="inline-json", size=len(text),
+                               note="geodata embedded in the page's own HTML"))
 
         # -- source scan ----------------------------------------------------
         try:
