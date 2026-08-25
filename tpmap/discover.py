@@ -710,10 +710,18 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
         except PWError:
             final = url
         if urlparse(final).path.rstrip("/") != urlparse(url).path.rstrip("/"):
-            report.errors.append(
-                f"redirected to {final} -- this page is gated (sign-in or region "
-                f"check). Capture a session with: tpmap login \"{url}\" "
-                f"--session session.json, then pass --session session.json")
+            landing = urlparse(final).path.rstrip("/").lower()
+            if landing in ("/home", "/dashboard", "/app", "/maps", ""):
+                # Being sent to the app's own home page means the session is fine
+                # and the URL simply is not a page.
+                report.errors.append(
+                    f"redirected to {final} -- you are signed in, so this URL is "
+                    f"most likely not a real page. Open the scheme you want in the "
+                    f"browser and run with --current instead of a URL")
+            else:
+                report.errors.append(
+                    f"redirected to {final} -- this page is gated. Sign in with "
+                    f"`tpmap browser`, then re-run with --cdp auto")
 
         # -- source scan ----------------------------------------------------
         try:
@@ -803,3 +811,65 @@ def save_login_state(url, session_path, *, executable_path=None, timeout=45000,
         close()
 
     return final, warnings
+
+
+def _active_tab_url(endpoint: str) -> str | None:
+    """The frontmost tab, per Chrome's most-recently-used ordering."""
+    import json as _json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{endpoint}/json/list", timeout=5) as resp:
+            tabs = _json.load(resp)
+    except Exception as exc:
+        log.debug("could not list tabs: %s", exc)
+        return None
+    for tab in tabs:
+        url = tab.get("url", "")
+        if tab.get("type") == "page" and not url.startswith(
+                ("about:", "chrome:", "devtools:")):
+            return url
+    return None
+
+
+def current_tab(cdp_url: str) -> tuple[str, list[str]]:
+    """The URL of the page open in the attached browser, plus its map links.
+
+    Guessing URLs is unreliable; letting the user navigate to the scheme they
+    actually want and reading it back is not.
+    """
+    from playwright.sync_api import Error as PWError
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        last = None
+        for ep in cdp_endpoints(cdp_url):
+            try:
+                browser = pw.chromium.connect_over_cdp(ep)
+                break
+            except PWError as exc:
+                last = exc
+        else:
+            raise CdpUnreachable(f"could not attach to {cdp_url}: {last}")
+
+        pages = []
+        for ctx in browser.contexts:
+            pages.extend(ctx.pages)
+        pages = [p for p in pages if not p.url.startswith(("about:", "chrome:",
+                                                           "devtools:"))]
+        if not pages:
+            raise CdpUnreachable("no page is open in that browser")
+
+        # Chrome lists tabs most-recently-used first, which is what "the page I
+        # am looking at" means; Playwright's own ordering is not that.
+        active = _active_tab_url(ep)
+        page = next((p for p in pages if p.url == active), pages[-1])
+        url = page.url
+        try:
+            links = page.evaluate("""
+                () => Array.from(document.querySelectorAll('a[href]'))
+                        .map(a => a.href)
+                        .filter(h => h.startsWith('http'))
+            """) or []
+        except PWError:
+            links = []
+        return url, list(dict.fromkeys(links))

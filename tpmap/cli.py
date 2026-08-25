@@ -106,11 +106,58 @@ def _resolve_cdp(args):
     return url
 
 
+def _current_url(cdp: str) -> str | None:
+    from .discover import CdpUnreachable, current_tab
+    try:
+        url, _ = current_tab(cdp)
+    except CdpUnreachable as exc:
+        print(f"! {exc}", file=sys.stderr)
+        return None
+    print(f"using the page open in your browser: {url}")
+    return url
+
+
+def cmd_links(args) -> int:
+    """List the map pages linked from whatever is open in the browser."""
+    from .crawl import looks_like_map_page
+    from .discover import CdpUnreachable, current_tab
+
+    cdp = _resolve_cdp(args) or args.cdp
+    try:
+        url, links = current_tab(cdp)
+    except CdpUnreachable as exc:
+        print(f"! {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\nopen page: {url}\n")
+    maps = [l for l in links if looks_like_map_page(l)]
+    shown = maps if (maps and not args.all) else links
+    for link in shown:
+        print(f"  {link}")
+    if not shown:
+        print("  (no links found -- navigate to a listing page and try again)")
+        return 1
+    print(f"\n{len(shown)} link(s). Scrape one with:")
+    print(f'  tpmap fetch "{shown[0]}" -o output --cdp auto')
+    if args.out:
+        Path(args.out).write_text("\n".join(shown) + "\n", encoding="utf-8")
+        print(f"written to {args.out}")
+    return 0
+
+
 def cmd_discover(args) -> int:
     from .discover import discover_page
 
     cdp = _resolve_cdp(args)
-    report, _ = discover_page(args.url, headed=args.headed, wait=args.wait,
+    url = args.url
+    if getattr(args, "current", False) or not url:
+        if not cdp:
+            print("--current needs a browser: add --cdp auto", file=sys.stderr)
+            return 2
+        url = _current_url(cdp)
+        if not url:
+            return 1
+    report, _ = discover_page(url, headed=args.headed, wait=args.wait,
                               click_layers=args.click_layers,
                               user_agent=args.user_agent,
                               executable_path=args.browser_path,
@@ -121,7 +168,7 @@ def cmd_discover(args) -> int:
     if args.json:
         print(json.dumps(data, indent=2))
     else:
-        print(f"\n{args.url}")
+        print(f"\n{url}")
         print(f"  {len(report.hits)} endpoint(s), "
               f"{data['inline_layers']} in-page layer(s) "
               f"({data['inline_features']} features)")
@@ -165,6 +212,14 @@ def cmd_fetch(args) -> int:
 
     cdp = _resolve_cdp(args)
     urls: list[str] = list(args.urls)
+    if getattr(args, "current", False):
+        if not cdp:
+            print("--current needs a browser: add --cdp auto", file=sys.stderr)
+            return 2
+        found = _current_url(cdp)
+        if not found:
+            return 1
+        urls.append(found)
     if args.from_file:
         urls += [l.strip() for l in Path(args.from_file).read_text().splitlines()
                  if l.strip() and not l.startswith("#")]
@@ -367,7 +422,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     d = sub.add_parser("discover", help="report the geodata endpoints a page uses")
-    d.add_argument("url")
+    d.add_argument("url", nargs="?")
+    d.add_argument("--current", action="store_true",
+                   help="use the page already open in the attached browser")
     d.add_argument("--json", action="store_true", help="machine-readable output")
     d.add_argument("--out", help="also write the report to this file")
     _browser_opts(d)
@@ -386,6 +443,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     g = sub.add_parser("fetch", help="download KML for one or more pages")
     g.add_argument("urls", nargs="*")
+    g.add_argument("--current", action="store_true",
+                   help="scrape the page already open in the attached browser -- "
+                        "navigate to the scheme you want, then run this")
     g.add_argument("--all", action="store_true", help="fetch every discoverable map page")
     g.add_argument("--from-file", help="read page URLs from a file, one per line")
     g.add_argument("--base", default=BASE_URL)
@@ -402,6 +462,15 @@ def build_parser() -> argparse.ArgumentParser:
     _browser_opts(g)
     _common(g)
     g.set_defaults(func=cmd_fetch)
+
+    k = sub.add_parser("links",
+                       help="list map pages linked from the page open in the browser")
+    k.add_argument("--all", action="store_true", help="show every link, not just maps")
+    k.add_argument("--out", help="write the list to a file")
+    k.add_argument("--cdp", default="auto", metavar="URL")
+    k.add_argument("--profile", default=None, metavar="DIR")
+    k.add_argument("-v", "--verbose", action="count", default=0)
+    k.set_defaults(func=cmd_links)
 
     b = sub.add_parser("browser",
                        help="start the Chrome tpmap manages (sign in there once)")

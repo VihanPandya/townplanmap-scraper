@@ -101,3 +101,49 @@ def test_unreachable_endpoint_explains_the_fix(site):
     assert "no Chrome is listening" in msg
     assert "Quit Chrome completely" in msg
     assert "127.0.0.1" in msg
+
+
+def _open_tab(endpoint, url):
+    """Open a tab in the attached browser and leave it there, as a user would."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as pw:
+        browser = pw.chromium.connect_over_cdp(endpoint)
+        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = ctx.new_page()
+        page.goto(url, wait_until="domcontentloaded")
+        page.wait_for_timeout(800)
+        return page.url
+
+
+def test_current_tab_reads_the_active_page(site, user_chrome):
+    from tpmap.discover import current_tab
+    endpoint, _ = user_chrome
+    _open_tab(endpoint, f"{site}/tp/scheme-c.html")
+    url, _links = current_tab(endpoint)
+    assert url == f"{site}/tp/scheme-c.html"
+
+
+def test_current_tab_follows_the_most_recent_tab(site, user_chrome):
+    """Playwright's page order is not most-recently-used; Chrome's listing is."""
+    from tpmap.discover import current_tab
+    endpoint, _ = user_chrome
+    _open_tab(endpoint, f"{site}/tp/scheme-c.html")
+    _open_tab(endpoint, f"{site}/")
+    url, links = current_tab(endpoint)
+    assert url == f"{site}/"
+    assert f"{site}/tp/scheme-a.html" in links
+
+
+def test_fetch_current_scrapes_the_open_page(site, user_chrome, tmp_path):
+    from tpmap.cli import main
+    endpoint, _ = user_chrome
+    _open_tab(endpoint, f"{site}/tp/scheme-c.html")
+    rc = main(["fetch", "--current", "-o", str(tmp_path), "--wait", "2.5",
+               "--cdp", endpoint])
+    assert rc == 0
+    assert list(tmp_path.glob("*.kml"))
+
+
+def test_current_without_a_browser_is_rejected(tmp_path):
+    from tpmap.cli import main
+    assert main(["fetch", "--current", "-o", str(tmp_path)]) == 2

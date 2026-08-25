@@ -137,6 +137,16 @@ tpmap fetch <url> -o output --cdp auto
 
 `--cdp auto` reuses that browser if it is running and starts it if not.
 
+**Don't guess URLs.** Navigate to the scheme you want in that window, then scrape
+whatever is on screen:
+
+```bash
+tpmap fetch --current -o output --cdp auto
+```
+
+`tpmap links --cdp auto` lists the map pages linked from the open page, so you can
+find real scheme URLs instead of inventing them.
+
 **Option A2 — attach to a Chrome you started yourself.** If you would rather use your
 own instance, quit Chrome completely first — check Task Manager for `chrome.exe`, since
 Chrome silently ignores `--remote-debugging-port` when an instance is already running,
@@ -201,6 +211,7 @@ a clear error instead of a KML full of nonsense.
 
 ```
 tpmap browser           start the Chrome tpmap manages (sign in there once)
+tpmap links             list map pages linked from the page open in the browser
 tpmap login [URL]       sign in yourself, save the session for later runs
 tpmap discover URL      what geodata does this page serve?
 tpmap list              enumerate scrapable pages (sitemap, else a link crawl)
@@ -229,7 +240,10 @@ found, not your data**. Getting one on its own means no KML was produced; open i
 look at `hits`. If it lists a `geojson`/`embedded`/`esri` endpoint, fetch that URL
 directly and run `tpmap convert` on it. If `hits` is empty, see the next entry.
 
-**"redirected to …"** — the page requires sign-in. See *Pages behind a sign-in* above.
+**"redirected to … /home"** — you *are* signed in; that URL just is not a real page.
+Open the scheme you want in the browser and use `--current`.
+
+**"redirected to …" (a login or landing page)** — the page requires sign-in. See *Pages behind a sign-in* above.
 
 **Nothing found at all** — open `output/_reports/<name>.json`. It lists every
 response the page made (`responses`), so you can see whether the page even loaded and
