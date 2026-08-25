@@ -13,3 +13,5 @@ output/
 *.kmz
 .cache/
 !tests/fixture_site/data/*.kml
+session.json
+*.session.json

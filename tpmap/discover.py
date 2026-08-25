@@ -439,7 +439,7 @@ def chromium_executable() -> str | None:
 
 def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                   user_agent=None, click_layers=False, capture=True,
-                  executable_path=None):
+                  executable_path=None, storage_state=None):
     """Load ``url`` in a browser and report every geodata endpoint it touches.
 
     Returns ``(Report, {url: body})`` -- bodies are the responses we already
@@ -503,6 +503,9 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
         ctx_args = {"ignore_https_errors": True}
         if user_agent:
             ctx_args["user_agent"] = user_agent
+        if storage_state and os.path.exists(str(storage_state)):
+            ctx_args["storage_state"] = str(storage_state)
+            log.info("using saved session %s", storage_state)
         ctx_args.setdefault("user_agent", BROWSER_UA)
         ctx_args.setdefault("viewport", {"width": 1440, "height": 900})
         ctx_args.setdefault("locale", "en-IN")
@@ -609,6 +612,18 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                                source="inline-json", size=len(text),
                                note="geodata embedded in the page's own HTML"))
 
+        # Landing somewhere else means the page is gated, and no amount of
+        # waiting will produce a map.
+        try:
+            final = page.url
+        except PWError:
+            final = url
+        if urlparse(final).path.rstrip("/") != urlparse(url).path.rstrip("/"):
+            report.errors.append(
+                f"redirected to {final} -- this page is gated (sign-in or region "
+                f"check). Capture a session with: tpmap login \"{url}\" "
+                f"--session session.json, then pass --session session.json")
+
         # -- source scan ----------------------------------------------------
         try:
             html = page.content()
@@ -634,3 +649,47 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
         browser.close()
 
     return report, bodies
+
+
+def save_login_state(url, session_path, *, executable_path=None, timeout=45000):
+    """Open a real browser so the user can sign in, then persist the session.
+
+    Nothing is automated here: the person logs in themselves with their own
+    credentials, and only the resulting cookies and local storage are saved for
+    later runs.
+    """
+    from playwright.sync_api import Error as PWError
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        launch_args = {"headless": False}
+        exe = executable_path or chromium_executable()
+        if exe:
+            launch_args["executable_path"] = exe
+        browser = pw.chromium.launch(**launch_args)
+        context = browser.new_context(user_agent=BROWSER_UA,
+                                      viewport={"width": 1440, "height": 900},
+                                      locale="en-IN")
+        page = context.new_page()
+        try:
+            page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+        except PWError as exc:
+            log.warning("could not open %s: %s", url, exc)
+
+        print("\nA browser window is open.")
+        print("  1. Sign in / dismiss whatever is blocking the page")
+        print("  2. Navigate to a scheme map and let it finish loading")
+        print("  3. Come back here and press Enter\n")
+        try:
+            input("Press Enter once you are signed in... ")
+        except EOFError:
+            pass
+
+        try:
+            final = page.url
+        except PWError:
+            final = url
+        context.storage_state(path=str(session_path))
+        browser.close()
+
+    return final

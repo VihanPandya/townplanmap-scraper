@@ -194,3 +194,41 @@ def test_missing_page_reports_its_status(site, browser_ok):
         pytest.skip("no usable chromium")
     report, _ = discover_page(f"{site}/tp/does-not-exist.html", wait=1.0)
     assert any("HTTP 404" in e for e in report.errors)
+
+
+def test_redirect_to_a_landing_page_is_reported(site, browser_ok):
+    """The live symptom: the scheme URL bounces to /welcome and no map loads."""
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/tp/gated.html", wait=2.0)
+    assert not report.hits
+    gated = [e for e in report.errors if "redirected to" in e]
+    assert gated and "welcome.html" in gated[0]
+    # and it must say what to do about it
+    assert "tpmap login" in gated[0]
+
+
+def test_saved_session_is_loaded(site, tmp_path, browser_ok):
+    """A session file from `tpmap login` must be accepted and applied."""
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    import json as _json
+    from urllib.parse import urlparse
+    host = urlparse(site).hostname
+    state = tmp_path / "session.json"
+    state.write_text(_json.dumps({
+        "cookies": [{"name": "tpmap_test", "value": "1", "domain": host,
+                     "path": "/", "expires": -1, "httpOnly": False,
+                     "secure": False, "sameSite": "Lax"}],
+        "origins": []}))
+    report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=2.0,
+                              storage_state=str(state))
+    assert [h.kind for h in report.hits] == ["embedded"]   # still works with a session
+
+
+def test_a_missing_session_file_is_not_fatal(site, tmp_path, browser_ok):
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=2.0,
+                              storage_state=str(tmp_path / "nope.json"))
+    assert [h.kind for h in report.hits] == ["embedded"]

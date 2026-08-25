@@ -48,6 +48,8 @@ def _browser_opts(p: argparse.ArgumentParser) -> None:
                    help="auto-toggle layer controls to surface lazily loaded data")
     p.add_argument("--browser-path", default=None, metavar="EXE",
                    help="Chromium/Chrome binary to drive (also honours $TPMAP_CHROMIUM)")
+    p.add_argument("--session", default=None, metavar="FILE",
+                   help="saved session from `tpmap login`, for pages behind a sign-in")
 
 
 # --------------------------------------------------------------------------
@@ -87,7 +89,8 @@ def cmd_discover(args) -> int:
     report, _ = discover_page(args.url, headed=args.headed, wait=args.wait,
                               click_layers=args.click_layers,
                               user_agent=args.user_agent,
-                              executable_path=args.browser_path)
+                              executable_path=args.browser_path,
+                              storage_state=args.session)
     data = report.to_dict()
     if args.json:
         print(json.dumps(data, indent=2))
@@ -167,7 +170,8 @@ def cmd_fetch(args) -> int:
                                    wait=args.wait, click_layers=args.click_layers,
                                    split=args.split, fmt=args.format,
                                    arcgis=args.arcgis, user_agent=args.user_agent,
-                                   executable_path=args.browser_path)
+                                   executable_path=args.browser_path,
+                                   storage_state=args.session)
             except Exception as exc:
                 log.exception("harvest failed")
                 print(f"    ! {exc}")
@@ -196,6 +200,17 @@ def _read_input(path: Path) -> bytes:
     if str(path) == "-":
         return sys.stdin.buffer.read()
     return path.read_bytes()
+
+
+def cmd_login(args) -> int:
+    """Capture a signed-in browser session for later runs."""
+    from .discover import save_login_state
+
+    final = save_login_state(args.url, args.session,
+                             executable_path=args.browser_path)
+    print(f"\nsession saved to {args.session} (ended on {final})")
+    print(f"now run:  tpmap fetch \"{args.url}\" -o output --session {args.session}")
+    return 0
 
 
 def cmd_convert(args) -> int:
@@ -330,6 +345,14 @@ def build_parser() -> argparse.ArgumentParser:
     _browser_opts(g)
     _common(g)
     g.set_defaults(func=cmd_fetch)
+
+    lg = sub.add_parser("login", help="sign in yourself and save the session")
+    lg.add_argument("url", nargs="?", default=BASE_URL)
+    lg.add_argument("--session", default="session.json",
+                    help="where to save the session (default: session.json)")
+    lg.add_argument("--browser-path", default=None, metavar="EXE")
+    lg.add_argument("-v", "--verbose", action="count", default=0)
+    lg.set_defaults(func=cmd_login)
 
     c = sub.add_parser("convert", help="convert JSON/GeoJSON/KMZ files on disk to KML")
     c.add_argument("inputs", nargs="+", metavar="FILE",

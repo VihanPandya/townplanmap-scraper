@@ -108,6 +108,26 @@ what QGIS reads into its attribute table) and as an HTML table in `<description>
 Google Earth shows in the balloon). Placemark names are promoted from whichever of
 `name`, `fp_no`, `plot_no`, `survey_no`, `tp_no`… the data provides.
 
+## Pages behind a sign-in
+
+If `discover` reports **"redirected to …"**, the page is gated and no amount of
+waiting will produce a map. Sign in once and reuse the session:
+
+```bash
+tpmap login https://townplanmap.com --session session.json
+```
+
+A real browser opens. You sign in with your own account, load a scheme map, then
+press Enter — only the resulting cookies and local storage are saved. Then:
+
+```bash
+tpmap discover <url> --session session.json
+tpmap fetch <url> -o output --session session.json
+```
+
+Nothing about this bypasses authentication: you log in as yourself, exactly as you
+would by hand. Keep `session.json` out of version control — it is a live credential.
+
 ## Converting JSON you already have
 
 If you have a `.json` from the site (saved from the browser's network tab, or handed
@@ -128,6 +148,8 @@ It does not require the JSON to be GeoJSON. Geometry is recovered from:
 - **WKT strings** — `POLYGON((72.5 23.0, ...))` from PostGIS-backed APIs
 - **Encoded polylines** — under a key that says so (`encodedPath`, `polyline`)
 - **Esri REST JSON** — including Web Mercator unprojection
+- **Firestore typed values** — `{"doubleValue": 23.0}`, `geoPointValue`, `arrayValue`
+  and `mapValue` wrappers, unwrapped before conversion
 
 Ordinary API responses with no geometry are rejected rather than guessed at, so you get
 a clear error instead of a KML full of nonsense.
@@ -135,6 +157,7 @@ a clear error instead of a KML full of nonsense.
 ## Commands
 
 ```
+tpmap login [URL]       sign in yourself, save the session for later runs
 tpmap discover URL      what geodata does this page serve?
 tpmap list              enumerate scrapable pages (sitemap, else a link crawl)
 tpmap fetch URL...      download and convert to KML
@@ -161,6 +184,8 @@ Useful flags:
 found, not your data**. Getting one on its own means no KML was produced; open it and
 look at `hits`. If it lists a `geojson`/`embedded`/`esri` endpoint, fetch that URL
 directly and run `tpmap convert` on it. If `hits` is empty, see the next entry.
+
+**"redirected to …"** — the page requires sign-in. See *Pages behind a sign-in* above.
 
 **Nothing found at all** — open `output/_reports/<name>.json`. It lists every
 response the page made (`responses`), so you can see whether the page even loaded and

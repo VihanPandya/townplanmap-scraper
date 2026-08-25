@@ -224,6 +224,83 @@ def decode_polyline(text: str, precision: int = 5):
 
 
 # --------------------------------------------------------------------------
+# Firestore
+# --------------------------------------------------------------------------
+
+# Firestore's REST API wraps every scalar in a type tag, so a document reads as
+# {"fields": {"lat": {"doubleValue": 23.0}}} rather than {"lat": 23.0}. Nothing
+# downstream recognises that, so unwrap it back to plain JSON first.
+_FIRESTORE_SCALARS = {
+    "stringValue": str, "booleanValue": bool, "doubleValue": float,
+    "integerValue": int, "timestampValue": str, "bytesValue": str,
+    "referenceValue": str,
+}
+
+
+def unwrap_firestore(node, depth: int = 0):
+    """Convert Firestore typed JSON into ordinary JSON. Idempotent."""
+    if depth > MAX_DEPTH:
+        return node
+
+    if isinstance(node, list):
+        return [unwrap_firestore(v, depth + 1) for v in node]
+    if not isinstance(node, dict):
+        return node
+
+    if len(node) == 1:
+        (key, value), = node.items()
+        if key in _FIRESTORE_SCALARS:
+            caster = _FIRESTORE_SCALARS[key]
+            try:
+                return caster(value)
+            except (TypeError, ValueError):
+                return value
+        if key == "nullValue":
+            return None
+        if key == "arrayValue":
+            values = (value or {}).get("values", []) if isinstance(value, dict) else []
+            return [unwrap_firestore(v, depth + 1) for v in values]
+        if key == "mapValue":
+            fields = (value or {}).get("fields", {}) if isinstance(value, dict) else {}
+            return {k: unwrap_firestore(v, depth + 1) for k, v in fields.items()}
+        if key == "geoPointValue" and isinstance(value, dict):
+            return {"lat": value.get("latitude"), "lng": value.get("longitude")}
+
+    # A document: merge its fields up, keeping the id as a property.
+    if "fields" in node and isinstance(node["fields"], dict):
+        out = {k: unwrap_firestore(v, depth + 1) for k, v in node["fields"].items()}
+        name = node.get("name")
+        if isinstance(name, str):
+            out.setdefault("_id", name.rsplit("/", 1)[-1])
+        return out
+
+    return {k: unwrap_firestore(v, depth + 1) for k, v in node.items()}
+
+
+def looks_like_firestore(obj) -> bool:
+    """True if the payload uses Firestore's typed-value encoding."""
+    found = [False]
+
+    def walk(node, depth=0):
+        if found[0] or depth > 6:
+            return
+        if isinstance(node, list):
+            for v in node[:50]:
+                walk(v, depth + 1)
+        elif isinstance(node, dict):
+            for key in node:
+                if key in _FIRESTORE_SCALARS or key in (
+                        "mapValue", "arrayValue", "geoPointValue"):
+                    found[0] = True
+                    return
+            for v in list(node.values())[:50]:
+                walk(v, depth + 1)
+
+    walk(obj)
+    return found[0]
+
+
+# --------------------------------------------------------------------------
 # record -> feature
 # --------------------------------------------------------------------------
 
@@ -354,6 +431,10 @@ def coerce_to_feature_collection(obj, *, latlon: bool = False) -> dict:
             return fc
     except ConversionError:
         pass
+
+    if looks_like_firestore(obj):
+        obj = unwrap_firestore(obj)
+        log.debug("unwrapped Firestore typed values")
 
     found: list = []
     _collect(obj, found, latlon)
