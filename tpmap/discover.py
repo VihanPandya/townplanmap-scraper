@@ -813,22 +813,24 @@ def save_login_state(url, session_path, *, executable_path=None, timeout=45000,
     return final, warnings
 
 
-def _active_tab_url(endpoint: str) -> str | None:
-    """The frontmost tab, per Chrome's most-recently-used ordering."""
+def list_tabs(endpoint: str) -> list[dict]:
+    """Every target Chrome reports, most-recently-used first."""
     import json as _json
     import urllib.request
-    try:
-        with urllib.request.urlopen(f"{endpoint}/json/list", timeout=5) as resp:
-            tabs = _json.load(resp)
-    except Exception as exc:
-        log.debug("could not list tabs: %s", exc)
-        return None
-    for tab in tabs:
-        url = tab.get("url", "")
-        if tab.get("type") == "page" and not url.startswith(
-                ("about:", "chrome:", "devtools:")):
-            return url
-    return None
+    for ep in cdp_endpoints(endpoint):
+        try:
+            with urllib.request.urlopen(f"{ep}/json/list", timeout=5) as resp:
+                return _json.load(resp)
+        except Exception as exc:
+            log.debug("could not list tabs at %s: %s", ep, exc)
+    return []
+
+
+def _is_real_page(tab: dict) -> bool:
+    url = tab.get("url", "")
+    return (tab.get("type") == "page"
+            and not url.startswith(("about:", "chrome:", "devtools:", "edge:"))
+            and url != "")
 
 
 def current_tab(cdp_url: str) -> tuple[str, list[str]]:
@@ -836,7 +838,62 @@ def current_tab(cdp_url: str) -> tuple[str, list[str]]:
 
     Guessing URLs is unreliable; letting the user navigate to the scheme they
     actually want and reading it back is not.
+
+    Chrome's own tab listing is the source of truth here -- it is ordered
+    most-recently-used, and it sees tabs that Playwright's context enumeration
+    can miss.
     """
+    from playwright.sync_api import Error as PWError
+    from playwright.sync_api import sync_playwright
+
+    tabs = list_tabs(cdp_url)
+    real = [t for t in tabs if _is_real_page(t)]
+    if not real:
+        blank = [t for t in tabs if t.get("type") == "page"]
+        if blank:
+            raise CdpUnreachable(
+                f"the browser is running but nothing is loaded in it "
+                f"({len(blank)} blank tab(s)). Open the scheme you want in that "
+                f"window, then run this again.")
+        raise CdpUnreachable(
+            "the browser is running but has no tabs open. Its window was probably "
+            "closed. Reopen it with:  tpmap browser --open https://townplanmap.com")
+
+    url = real[0]["url"]
+
+    # Links are a bonus; failing to read them must not lose the URL.
+    links: list[str] = []
+    try:
+        with sync_playwright() as pw:
+            last = None
+            for ep in cdp_endpoints(cdp_url):
+                try:
+                    browser = pw.chromium.connect_over_cdp(ep)
+                    break
+                except PWError as exc:
+                    last = exc
+            else:
+                log.debug("could not attach for link extraction: %s", last)
+                return url, links
+
+            pages = []
+            for ctx in browser.contexts:
+                pages.extend(ctx.pages)
+            page = next((p for p in pages if p.url == url), None)
+            if page is not None:
+                links = page.evaluate("""
+                    () => Array.from(document.querySelectorAll('a[href]'))
+                            .map(a => a.href)
+                            .filter(h => h.startsWith('http'))
+                """) or []
+    except Exception as exc:
+        log.debug("link extraction failed: %s", exc)
+
+    return url, list(dict.fromkeys(links))
+
+
+def open_tab(cdp_url: str, url: str) -> str:
+    """Open a page in the attached browser and return its URL."""
     from playwright.sync_api import Error as PWError
     from playwright.sync_api import sync_playwright
 
@@ -850,26 +907,10 @@ def current_tab(cdp_url: str) -> tuple[str, list[str]]:
                 last = exc
         else:
             raise CdpUnreachable(f"could not attach to {cdp_url}: {last}")
-
-        pages = []
-        for ctx in browser.contexts:
-            pages.extend(ctx.pages)
-        pages = [p for p in pages if not p.url.startswith(("about:", "chrome:",
-                                                           "devtools:"))]
-        if not pages:
-            raise CdpUnreachable("no page is open in that browser")
-
-        # Chrome lists tabs most-recently-used first, which is what "the page I
-        # am looking at" means; Playwright's own ordering is not that.
-        active = _active_tab_url(ep)
-        page = next((p for p in pages if p.url == active), pages[-1])
-        url = page.url
+        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = ctx.new_page()
         try:
-            links = page.evaluate("""
-                () => Array.from(document.querySelectorAll('a[href]'))
-                        .map(a => a.href)
-                        .filter(h => h.startsWith('http'))
-            """) or []
-        except PWError:
-            links = []
-        return url, list(dict.fromkeys(links))
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        except PWError as exc:
+            log.warning("could not load %s: %s", url, exc)
+        return page.url

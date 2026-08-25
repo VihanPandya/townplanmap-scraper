@@ -147,3 +147,54 @@ def test_fetch_current_scrapes_the_open_page(site, user_chrome, tmp_path):
 def test_current_without_a_browser_is_rejected(tmp_path):
     from tpmap.cli import main
     assert main(["fetch", "--current", "-o", str(tmp_path)]) == 2
+
+
+def test_list_tabs_reports_what_chrome_has(site, user_chrome):
+    from tpmap.discover import list_tabs
+    endpoint, _ = user_chrome
+    _open_tab(endpoint, f"{site}/tp/scheme-c.html")
+    urls = [t.get("url") for t in list_tabs(endpoint)]
+    assert any("scheme-c.html" in (u or "") for u in urls)
+
+
+def test_open_tab_then_read_it_back(site, user_chrome):
+    from tpmap.discover import current_tab, open_tab
+    endpoint, _ = user_chrome
+    opened = open_tab(endpoint, f"{site}/tp/scheme-d.html")
+    assert opened.endswith("scheme-d.html")
+    assert current_tab(endpoint)[0].endswith("scheme-d.html")
+
+
+def test_blank_browser_says_what_to_do(tmp_path_factory):
+    """A window showing only chrome://newtab must not read as a broken tool."""
+    from tpmap.discover import CdpUnreachable, current_tab
+    exe = chromium_executable()
+    if not exe:
+        pytest.skip("no chromium available")
+    port = _free_port()
+    proc = subprocess.Popen(
+        [exe, "--headless=new", f"--remote-debugging-port={port}", "--no-sandbox",
+         f"--user-data-dir={tmp_path_factory.mktemp('blank')}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    endpoint = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(60):
+            try:
+                urllib.request.urlopen(f"{endpoint}/json/version", timeout=1).read()
+                break
+            except Exception:
+                time.sleep(0.5)
+        else:
+            pytest.skip("chrome did not come up")
+
+        with pytest.raises(CdpUnreachable) as err:
+            current_tab(endpoint)
+        msg = str(err.value)
+        assert "nothing is loaded" in msg or "no tabs open" in msg
+        assert "tpmap browser" in msg or "Open the scheme" in msg
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()

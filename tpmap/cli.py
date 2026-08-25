@@ -301,8 +301,9 @@ def cmd_login(args) -> int:
 
 
 def cmd_browser(args) -> int:
-    """Start (or report) the Chrome tpmap manages for itself."""
+    """Start, inspect, or open a page in the Chrome tpmap manages."""
     from .browser import default_profile_dir, endpoint, find_chrome
+    from .discover import CdpUnreachable, list_tabs, open_tab, _is_real_page
 
     if args.where:
         exe = find_chrome()
@@ -316,12 +317,38 @@ def cmd_browser(args) -> int:
         print(f"! {exc}", file=sys.stderr)
         return 1
 
+    tabs = list_tabs(url)
+    real = [t for t in tabs if _is_real_page(t)]
+
+    if args.tabs:
+        print(f"\nbrowser at {url}")
+        if not tabs:
+            print("  (no tabs)")
+        for tab in tabs:
+            mark = "*" if _is_real_page(tab) else " "
+            print(f"  {mark} [{tab.get('type','?')}] {tab.get('url','')[:100]}")
+        return 0
+
+    # With nothing loaded, a window the user can actually use is more helpful
+    # than a bare success message.
+    target = args.open or (None if real else BASE_URL)
+    if target:
+        try:
+            opened = open_tab(url, target)
+            print(f"opened {opened}")
+        except CdpUnreachable as exc:
+            print(f"! {exc}", file=sys.stderr)
+            return 1
+        real = [t for t in list_tabs(url) if _is_real_page(t)]
+
     print(f"\ntpmap's Chrome is running at {url}")
+    if real:
+        print(f"currently showing: {real[0].get('url','')}")
     print("\nIn that window: sign in to the site and open a scheme map.")
     print("It uses its own profile, so your everyday Chrome is untouched and the")
     print("sign-in is remembered for future runs.\n")
     print("Then, leaving it open:")
-    print('  tpmap fetch "<scheme url>" -o output --cdp auto')
+    print("  tpmap fetch --current -o output --cdp auto")
     return 0
 
 
@@ -479,6 +506,11 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--port", type=int, default=None)
     b.add_argument("--where", action="store_true",
                    help="just report which browser and profile would be used")
+    b.add_argument("--open", metavar="URL", default=None,
+                   help="open this page in the browser (default: the site home "
+                        "when nothing is loaded)")
+    b.add_argument("--tabs", action="store_true",
+                   help="list the tabs the browser currently has open")
     b.add_argument("-v", "--verbose", action="count", default=0)
     b.set_defaults(func=cmd_browser)
 

@@ -147,6 +147,10 @@ tpmap fetch --current -o output --cdp auto
 `tpmap links --cdp auto` lists the map pages linked from the open page, so you can
 find real scheme URLs instead of inventing them.
 
+If a command says the browser has nothing loaded, see what it has open with
+`tpmap browser --tabs`, and put a page in it with
+`tpmap browser --open https://townplanmap.com`.
+
 **Option A2 — attach to a Chrome you started yourself.** If you would rather use your
 own instance, quit Chrome completely first — check Task Manager for `chrome.exe`, since
 Chrome silently ignores `--remote-debugging-port` when an instance is already running,
