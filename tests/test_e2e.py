@@ -277,3 +277,23 @@ def test_routes_are_found_in_page_source_not_just_anchors():
     assert "https://townplanmap.com/tp/scheme-ognaj221" in found
     assert "https://townplanmap.com/dp/ahmedabad-2021" in found
     assert not any(f.endswith(".js") for f in found)
+
+
+def test_routes_are_recovered_from_fetched_json(site, browser_ok):
+    """A single-page app names its routes in data it fetches, not in markup.
+
+    spa.html contains no scheme link at all; the routes arrive in routes.json.
+    """
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/spa.html", wait=3.0)
+    assert f"{site}/tp/town-planning-scheme-map-gujarat-ahmedabad-ognaj221" in report.routes
+    assert len(report.routes) == 2
+    assert "routes" in report.to_dict()
+
+
+def test_route_scanning_ignores_pages_that_name_none(site, browser_ok):
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/about.html", wait=1.5)
+    assert report.routes == []

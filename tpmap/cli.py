@@ -131,6 +131,25 @@ def cmd_links(args) -> int:
 
     print(f"\nopen page: {url}\n")
     maps = [l for l in links if looks_like_map_page(l)]
+
+    # A single-page app may keep its routes nowhere in the document -- they
+    # arrive later, inside the data it fetches. Look there before giving up.
+    if not maps and not args.shallow:
+        print("  nothing in the page markup; checking what the page loads...\n")
+        from .discover import discover_page
+        report, _bodies = discover_page(url, wait=args.wait, cdp_url=cdp)
+        deep = list(report.routes)
+        for resp in report.responses:
+            if looks_like_map_page(resp.get("url", "")):
+                deep.append(resp["url"])
+        maps = list(dict.fromkeys(deep))
+        if not maps:
+            print(f"  still nothing. The page made {len(report.responses)} request(s) "
+                  f"and none named a scheme page.")
+            print("  Try: tpmap list        (reads the site's sitemap, no browser)")
+            print("  Or navigate to a scheme in the browser and use --current directly.")
+            return 1
+
     shown = maps if (maps and not args.all) else links
     for link in shown:
         print(f"  {link}")
@@ -138,7 +157,8 @@ def cmd_links(args) -> int:
         print("  (no links found -- navigate to a listing page and try again)")
         return 1
     print(f"\n{len(shown)} link(s). Scrape one with:")
-    print(f'  tpmap fetch "{shown[0]}" -o output --cdp auto')
+    print(f'  tpmap browser --open "{shown[0]}"')
+    print("  tpmap fetch --current -o output --cdp auto")
     if args.out:
         Path(args.out).write_text("\n".join(shown) + "\n", encoding="utf-8")
         print(f"written to {args.out}")
@@ -493,6 +513,10 @@ def build_parser() -> argparse.ArgumentParser:
     k = sub.add_parser("links",
                        help="list map pages linked from the page open in the browser")
     k.add_argument("--all", action="store_true", help="show every link, not just maps")
+    k.add_argument("--shallow", action="store_true",
+                   help="only read the markup; do not inspect what the page loads")
+    k.add_argument("--wait", type=float, default=8.0,
+                   help="seconds to let the page load when inspecting its requests")
     k.add_argument("--out", help="write the list to a file")
     k.add_argument("--cdp", default="auto", metavar="URL")
     k.add_argument("--profile", default=None, metavar="DIR")

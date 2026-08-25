@@ -84,6 +84,9 @@ class Report:
     # Everything the page loaded, kept so a run that finds nothing can still be
     # diagnosed from the report alone.
     responses: list[dict] = field(default_factory=list)
+    # Map-page paths named anywhere the page loaded. A single-page app keeps its
+    # routes in fetched data, not in the markup, so this is how they surface.
+    routes: list[str] = field(default_factory=list)
 
     def add(self, hit: Hit) -> None:
         if all(hit.key() != h.key() for h in self.hits):
@@ -113,6 +116,7 @@ class Report:
             "errors": self.errors,
             "responses_seen": len(self.responses),
             "responses": self.responses[:200],
+            "routes": self.routes[:200],
         }
 
 
@@ -574,6 +578,15 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                 if len(body) < 8 * 1024 * 1024:
                     text_blobs.append((rurl, body.decode("utf-8", errors="replace")))
 
+            # Any text payload may name scheme routes, JSON API replies most of all.
+            if body and len(body) < 8 * 1024 * 1024 and (
+                    "json" in ctype or "text" in ctype or "javascript" in ctype
+                    or rtype in ("document", "script", "xhr", "fetch")):
+                for route in _paths_in_source(
+                        body.decode("utf-8", errors="replace"), url):
+                    if route not in report.routes and len(report.routes) < 500:
+                        report.routes.append(route)
+
             if len(report.responses) < 400:
                 report.responses.append({
                     "url": rurl[:400], "type": rtype, "content_type": ctype,
@@ -752,6 +765,9 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
         except PWError:
             pass
         for base, text in text_blobs:
+            for route in _paths_in_source(text, url):
+                if route not in report.routes and len(report.routes) < 500:
+                    report.routes.append(route)
             for found in scan_source(text, base):
                 kind = classify(found) or "kml"
                 report.add(Hit(url=found, kind=kind, source="source-scan",
