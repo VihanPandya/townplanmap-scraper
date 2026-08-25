@@ -70,4 +70,34 @@ def test_a_dead_endpoint_is_reported_not_raised(site):
     report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=1.0,
                               cdp_url=f"http://127.0.0.1:{_free_port()}")
     assert not report.hits
-    assert any("could not start a browser" in e for e in report.errors)
+    assert any("no Chrome is listening" in e for e in report.errors)
+
+
+def test_localhost_is_tried_as_ipv4_first():
+    """Chrome binds IPv4 only; localhost resolves to ::1 first on Windows."""
+    from tpmap.discover import cdp_endpoints
+    assert cdp_endpoints("http://localhost:9222")[0] == "http://127.0.0.1:9222"
+    assert "http://[::1]:9222" in cdp_endpoints("http://localhost:9222")
+    # a bare host:port is accepted
+    assert cdp_endpoints("localhost:9222")[0] == "http://127.0.0.1:9222"
+    # a real remote host is left alone
+    assert cdp_endpoints("http://10.0.0.4:9222") == ["http://10.0.0.4:9222"]
+
+
+def test_attaching_via_localhost_spelling_works(site, user_chrome):
+    """The exact invocation that failed with ECONNREFUSED ::1."""
+    endpoint, _ = user_chrome
+    port = endpoint.rsplit(":", 1)[1]
+    report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=2.5,
+                              cdp_url=f"http://localhost:{port}")
+    assert [h.kind for h in report.hits] == ["embedded"]
+
+
+def test_unreachable_endpoint_explains_the_fix(site):
+    report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=1.0,
+                              cdp_url=f"http://localhost:{_free_port()}")
+    assert not report.hits
+    msg = "\n".join(report.errors)
+    assert "no Chrome is listening" in msg
+    assert "Quit Chrome completely" in msg
+    assert "127.0.0.1" in msg

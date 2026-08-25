@@ -131,6 +131,10 @@ remote debugging, sign in normally, leave it open:
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222
 ```
 
+Quit Chrome completely first — check Task Manager for `chrome.exe`. The flag is
+silently ignored if Chrome is already running, which is the usual reason this
+appears not to work.
+
 Then point the scraper at it. Nothing is automated at launch, so the login behaves
 exactly as it does by hand:
 
@@ -233,6 +237,12 @@ would have to come from the source agency.
 **An ArcGIS service was found** — re-run with `--arcgis` to export the full layer.
 
 **Chromium won't launch** — set `TPMAP_CHROMIUM` or pass `--browser-path`.
+
+**`--cdp` says "no Chrome is listening"** — either Chrome was already running when you
+passed `--remote-debugging-port` (quit it fully and retry), or nothing is on that port.
+Check by opening `http://127.0.0.1:9222/json/version`. The IPv4/IPv6 spelling is
+handled for you: `localhost` is tried as `127.0.0.1` first, since Chrome binds IPv4
+only while Windows resolves `localhost` to `::1`.
 
 ## Development
 

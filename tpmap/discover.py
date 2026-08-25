@@ -438,6 +438,28 @@ def chromium_executable() -> str | None:
 
 
 
+def cdp_endpoints(url: str) -> list[str]:
+    """Candidate CDP URLs to try, in order.
+
+    Chrome binds its debugging port to IPv4 127.0.0.1 only, while "localhost"
+    resolves to IPv6 ::1 first on Windows -- so the obvious URL is refused.
+    Try the loopback spellings rather than making the user work that out.
+    """
+    parsed = urlparse(url if "://" in url else f"http://{url}")
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 9222
+
+    hosts = [host]
+    if host in ("localhost", "127.0.0.1", "::1"):
+        hosts = ["127.0.0.1", "localhost", "[::1]"]
+    return [f"{scheme}://{h}:{port}" for h in dict.fromkeys(hosts)]
+
+
+class CdpUnreachable(Exception):
+    """No Chrome is listening for a debugger on the given endpoint."""
+
+
 def _open_context(pw, *, headed, executable_path, storage_state, cdp_url,
                   profile_dir, user_agent):
     """Return (context, close_fn).
@@ -462,11 +484,31 @@ def _open_context(pw, *, headed, executable_path, storage_state, cdp_url,
     }
 
     if cdp_url:
-        browser = pw.chromium.connect_over_cdp(cdp_url)
-        context = browser.contexts[0] if browser.contexts else browser.new_context()
-        log.info("attached to your browser at %s", cdp_url)
-        # Never close a browser we did not start.
-        return context, (lambda: None)
+        from playwright.sync_api import Error as PWError
+
+        last = None
+        for endpoint in cdp_endpoints(cdp_url):
+            try:
+                browser = pw.chromium.connect_over_cdp(endpoint)
+            except PWError as exc:
+                log.debug("cdp connect failed for %s: %s", endpoint, exc)
+                last = exc
+                continue
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            log.info("attached to your browser at %s", endpoint)
+            # Never close a browser we did not start.
+            return context, (lambda: None)
+
+        tried = ", ".join(cdp_endpoints(cdp_url))
+        raise CdpUnreachable(
+            f"no Chrome is listening for a debugger (tried {tried}).\n"
+            f"      1. Quit Chrome completely -- check Task Manager for chrome.exe. "
+            f"The --remote-debugging-port flag is ignored if Chrome is already running.\n"
+            f"      2. Start it again with: "
+            f'chrome.exe --remote-debugging-port=9222\n'
+            f"      3. Confirm it is up by opening http://127.0.0.1:9222/json/version "
+            f"in that browser.\n"
+            f"      Underlying error: {last}")
 
     if profile_dir:
         launch = {"headless": not headed}
@@ -553,6 +595,9 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                 pw, headed=headed, executable_path=executable_path,
                 storage_state=storage_state, cdp_url=cdp_url,
                 profile_dir=profile_dir, user_agent=user_agent)
+        except CdpUnreachable as exc:
+            report.errors.append(str(exc))
+            return report, bodies
         except PWError as exc:
             report.errors.append(f"could not start a browser: {exc}")
             return report, bodies
