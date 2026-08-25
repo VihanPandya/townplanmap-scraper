@@ -723,6 +723,18 @@ def discover_page(url, *, headed=False, wait=6.0, timeout=45000,
                     f"redirected to {final} -- this page is gated. Sign in with "
                     f"`tpmap browser`, then re-run with --cdp auto")
 
+        # A home or dashboard route carrying only basemap tiles is the app
+        # shell, not a map page -- worth saying, since it looks like a failure.
+        shell_paths = ("/", "/home", "/dashboard", "/app", "/welcome", "/maps")
+        if (urlparse(final).path.rstrip("/").lower() or "/") in shell_paths:
+            kinds = {h.kind for h in report.hits}
+            if not report.inline and kinds <= {"tiles"}:
+                report.errors.append(
+                    "this is the app's home screen, not a scheme map. Open a "
+                    "specific scheme in the browser (search or browse to one, and "
+                    "wait for its plots to draw), then run --current again. "
+                    "`tpmap links --cdp auto` lists scheme pages it can see.")
+
         # -- source scan ----------------------------------------------------
         try:
             html = page.content()
@@ -813,6 +825,23 @@ def save_login_state(url, session_path, *, executable_path=None, timeout=45000,
     return final, warnings
 
 
+# Route-shaped paths worth surfacing as candidate map pages.
+ROUTE_PATH_RE = re.compile(
+    r"[\"'(\s](/(?:tp|dp|scheme|schemes|map|maps|project|projects)/[A-Za-z0-9][^\"'()\s\\]{2,180})",
+    re.I)
+
+
+def _paths_in_source(html: str, base_url: str) -> list[str]:
+    """Map-page paths mentioned anywhere in the markup or embedded route data."""
+    found = []
+    for match in ROUTE_PATH_RE.finditer(html or ""):
+        path = match.group(1).rstrip(".,;")
+        if path.endswith((".js", ".css", ".png", ".jpg", ".svg", ".webp", ".woff2")):
+            continue
+        found.append(urljoin(base_url, path))
+    return list(dict.fromkeys(found))
+
+
 def list_tabs(endpoint: str) -> list[dict]:
     """Every target Chrome reports, most-recently-used first."""
     import json as _json
@@ -886,6 +915,14 @@ def current_tab(cdp_url: str) -> tuple[str, list[str]]:
                             .map(a => a.href)
                             .filter(h => h.startsWith('http'))
                 """) or []
+                # Single-page apps route by script, so most destinations never
+                # appear as an <a href>. They do appear as paths in the markup
+                # and in the embedded route data.
+                try:
+                    html = page.content()
+                except PWError:
+                    html = ""
+                links += _paths_in_source(html, url)
     except Exception as exc:
         log.debug("link extraction failed: %s", exc)
 

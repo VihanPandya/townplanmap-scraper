@@ -248,3 +248,32 @@ def test_redirect_to_app_home_is_reported_as_a_bad_url(site, browser_ok):
     assert "not a real page" in msg
     assert "--current" in msg
     assert "session" not in msg.lower()
+
+
+def test_app_shell_is_named_as_such(site, browser_ok):
+    """Scraping the home screen looked like a tool failure; it is a user step."""
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/home", wait=1.5)
+    msg = "\n".join(report.errors)
+    assert "app's home screen" in msg
+    assert "tpmap links" in msg
+
+
+def test_a_real_scheme_page_is_not_called_a_shell(site, browser_ok):
+    if not browser_ok:
+        pytest.skip("no usable chromium")
+    report, _ = discover_page(f"{site}/tp/scheme-c.html", wait=2.0)
+    assert not any("home screen" in e for e in report.errors)
+
+
+def test_routes_are_found_in_page_source_not_just_anchors():
+    """Single-page apps route by script, so <a href> misses most destinations."""
+    from tpmap.discover import _paths_in_source
+    html = ('<a href="/about">a</a>'
+            '<script id="__NEXT_DATA__">{"paths":["/tp/scheme-ognaj221",'
+            '"/dp/ahmedabad-2021"],"chunk":"/tp/static.js"}</script>')
+    found = _paths_in_source(html, "https://townplanmap.com/home")
+    assert "https://townplanmap.com/tp/scheme-ognaj221" in found
+    assert "https://townplanmap.com/dp/ahmedabad-2021" in found
+    assert not any(f.endswith(".js") for f in found)
