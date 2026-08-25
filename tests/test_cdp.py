@@ -198,3 +198,40 @@ def test_blank_browser_says_what_to_do(tmp_path_factory):
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def test_normalise_target_rejects_a_pasted_placeholder():
+    """A placeholder copied verbatim must not silently open about:blank."""
+    from tpmap.discover import normalise_target
+    for bad in ["<url it printed>", "<scheme url>", ""]:
+        with pytest.raises(ValueError):
+            normalise_target(bad)
+
+
+def test_normalise_target_accepts_what_people_paste():
+    from tpmap.discover import normalise_target
+    assert normalise_target("https://townplanmap.com/tp/x") == "https://townplanmap.com/tp/x"
+    assert normalise_target("townplanmap.com/tp/x") == "https://townplanmap.com/tp/x"
+    assert normalise_target('  "https://townplanmap.com"  ') == "https://townplanmap.com"
+    # loopback is not TLS
+    assert normalise_target("127.0.0.1:8000/a").startswith("http://")
+    # a host:port must not be mistaken for a scheme
+    assert normalise_target("localhost:8000/a") == "http://localhost:8000/a"
+    assert normalise_target("townplanmap.com:8443/x") == "https://townplanmap.com:8443/x"
+
+
+def test_normalise_target_rejects_non_http_schemes():
+    from tpmap.discover import normalise_target
+    for bad in ["file:///etc/passwd", "ftp://x/y", "javascript:alert(1)",
+                "mailto:a@b.c", "data:text/html,x"]:
+        with pytest.raises(ValueError):
+            normalise_target(bad)
+
+
+def test_open_tab_raises_on_an_unloadable_url(site, user_chrome):
+    from tpmap.discover import open_tab
+    endpoint, _ = user_chrome
+    with pytest.raises(ValueError):
+        open_tab(endpoint, "<url it printed>")
+    # and a good one still works
+    assert open_tab(endpoint, f"{site}/tp/scheme-c.html").endswith("scheme-c.html")

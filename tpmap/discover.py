@@ -929,11 +929,40 @@ def current_tab(cdp_url: str) -> tuple[str, list[str]]:
     return url, list(dict.fromkeys(links))
 
 
+def normalise_target(url: str) -> str:
+    """Accept what people actually paste, or say why it is not a URL."""
+    text = (url or "").strip().strip('"').strip("'")
+    if not text:
+        raise ValueError("no URL given")
+    # A placeholder pasted verbatim from instructions, rather than a real URL.
+    if text.startswith("<") or text.endswith(">"):
+        raise ValueError(
+            f"{text!r} is a placeholder, not a URL -- replace it with a real "
+            f"address, e.g. https://townplanmap.com/tp/<scheme>")
+    # A scheme that is not http(s) must be refused, not repaired -- note that
+    # javascript: and mailto: carry no "//", so testing for that is not enough.
+    # The negative lookahead keeps "localhost:8000" a host:port, not a scheme.
+    scheme_match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):(?!\d+(?:[/?#]|$))", text)
+    if scheme_match and scheme_match.group(1).lower() not in ("http", "https"):
+        raise ValueError(f"{url!r} is not an http(s) URL")
+
+    if "://" not in text:
+        host = text.split("/", 1)[0].split(":", 1)[0].lower()
+        # Loopback is virtually never TLS; everything else should be.
+        text = ("http://" if host in ("localhost", "127.0.0.1", "::1")
+                else "https://") + text
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"{url!r} is not a usable http(s) URL")
+    return text
+
+
 def open_tab(cdp_url: str, url: str) -> str:
     """Open a page in the attached browser and return its URL."""
     from playwright.sync_api import Error as PWError
     from playwright.sync_api import sync_playwright
 
+    url = normalise_target(url)
     with sync_playwright() as pw:
         last = None
         for ep in cdp_endpoints(cdp_url):
@@ -949,5 +978,9 @@ def open_tab(cdp_url: str, url: str) -> str:
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
         except PWError as exc:
-            log.warning("could not load %s: %s", url, exc)
+            try:
+                page.close()
+            except PWError:
+                pass
+            raise ValueError(f"could not load {url}: {str(exc)[:200]}")
         return page.url

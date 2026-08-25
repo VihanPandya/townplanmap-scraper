@@ -336,7 +336,7 @@ def cmd_browser(args) -> int:
         try:
             opened = open_tab(url, target)
             print(f"opened {opened}")
-        except CdpUnreachable as exc:
+        except (CdpUnreachable, ValueError) as exc:
             print(f"! {exc}", file=sys.stderr)
             return 1
         real = [t for t in list_tabs(url) if _is_real_page(t)]
