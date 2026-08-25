@@ -297,3 +297,42 @@ def test_route_scanning_ignores_pages_that_name_none(site, browser_ok):
         pytest.skip("no usable chromium")
     report, _ = discover_page(f"{site}/about.html", wait=1.5)
     assert report.routes == []
+
+
+def test_listing_reports_progress(site, fetcher):
+    """A silent multi-minute command reads as a hang."""
+    from tpmap.crawl import discover_pages
+    messages = []
+    urls = discover_pages(fetcher, site + "/", progress=messages.append)
+    assert urls
+    joined = "\n".join(messages)
+    assert "looking for a sitemap" in joined
+    assert "sitemap yielded" in joined
+    assert "look like map pages" in joined
+
+
+def test_sitemap_probing_stops_once_one_is_found(site, fetcher):
+    """Each miss costs a request and its retries; do not probe after a hit."""
+    from tpmap.crawl import sitemap_urls
+    tried = []
+    real_get = fetcher.get_bytes
+
+    def counting(url, **kw):
+        tried.append(url)
+        return real_get(url, **kw)
+
+    fetcher.get_bytes = counting
+    try:
+        urls = sitemap_urls(fetcher, site + "/")
+    finally:
+        fetcher.get_bytes = real_get
+    assert urls
+    probes = [u for u in tried if "sitemap" in u]
+    assert probes == [f"{site}/sitemap.xml"], probes
+
+
+def test_crawl_fallback_reports_each_page(site, fetcher):
+    from tpmap.crawl import crawl_links
+    messages = []
+    crawl_links(fetcher, site + "/", max_pages=5, progress=messages.append)
+    assert any("[1/5]" in m for m in messages)

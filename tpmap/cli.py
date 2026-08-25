@@ -214,9 +214,12 @@ def cmd_discover(args) -> int:
 def cmd_list(args) -> int:
     from .crawl import discover_pages
 
+    def say(message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
+
     with _fetcher(args) as f:
         urls = discover_pages(f, args.base, max_pages=args.max_pages,
-                              map_pages_only=not args.all_pages)
+                              map_pages_only=not args.all_pages, progress=say)
     if args.limit:
         urls = urls[:args.limit]
     for u in urls:
@@ -247,8 +250,10 @@ def cmd_fetch(args) -> int:
     with _fetcher(args) as f:
         if args.all:
             from .crawl import discover_pages
-            urls += discover_pages(f, args.base, max_pages=args.max_pages,
-                                   map_pages_only=not args.all_pages)
+            urls += discover_pages(
+                f, args.base, max_pages=args.max_pages,
+                map_pages_only=not args.all_pages,
+                progress=lambda m: print(m, file=sys.stderr, flush=True))
         urls = list(dict.fromkeys(urls))
         if not urls:
             print("nothing to fetch: pass URLs, --from-file, or --all", file=sys.stderr)
