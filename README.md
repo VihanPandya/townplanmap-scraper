@@ -119,24 +119,32 @@ never sends. And Firebase Auth keeps its token in **IndexedDB**, which a saved
 session file cannot carry. Both problems disappear if you drive the browser you
 already signed into.
 
-**Option A — attach to a running Chrome (recommended).** Start Chrome yourself with
-remote debugging, sign in normally, leave it open:
+**Option A — let tpmap run its own Chrome (recommended).** One command, no need to
+quit anything:
+
+```bash
+tpmap browser
+```
+
+A Chrome window opens on a profile of tpmap's own (`~/.tpmap/chrome-profile`). Sign in
+there and open a scheme map. Your everyday Chrome is untouched, and because the profile
+persists on disk the sign-in is remembered — IndexedDB included, which is where Firebase
+Auth actually keeps its token. Then, leaving that window open:
+
+```bash
+tpmap fetch <url> -o output --cdp auto
+```
+
+`--cdp auto` reuses that browser if it is running and starts it if not.
+
+**Option A2 — attach to a Chrome you started yourself.** If you would rather use your
+own instance, quit Chrome completely first — check Task Manager for `chrome.exe`, since
+Chrome silently ignores `--remote-debugging-port` when an instance is already running,
+which is the usual reason this appears not to work:
 
 ```powershell
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
 ```
-
-```bash
-# macOS
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222
-```
-
-Quit Chrome completely first — check Task Manager for `chrome.exe`. The flag is
-silently ignored if Chrome is already running, which is the usual reason this
-appears not to work.
-
-Then point the scraper at it. Nothing is automated at launch, so the login behaves
-exactly as it does by hand:
 
 ```bash
 tpmap fetch <url> -o output --cdp http://localhost:9222
@@ -192,6 +200,7 @@ a clear error instead of a KML full of nonsense.
 ## Commands
 
 ```
+tpmap browser           start the Chrome tpmap manages (sign in there once)
 tpmap login [URL]       sign in yourself, save the session for later runs
 tpmap discover URL      what geodata does this page serve?
 tpmap list              enumerate scrapable pages (sitemap, else a link crawl)

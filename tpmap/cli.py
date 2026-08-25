@@ -51,9 +51,11 @@ def _browser_opts(p: argparse.ArgumentParser) -> None:
     p.add_argument("--session", default=None, metavar="FILE",
                    help="saved session from `tpmap login`, for pages behind a sign-in")
     p.add_argument("--cdp", default=None, metavar="URL",
-                   help="attach to a Chrome you started yourself, e.g. "
-                        "http://localhost:9222 -- the reliable way past logins that "
-                        "refuse to run under automation")
+                   help="attach to a Chrome over the devtools protocol. Use "
+                        "'auto' to let tpmap start and manage its own Chrome "
+                        "(recommended -- it will not disturb your everyday "
+                        "browser), or give a URL like http://localhost:9222 for "
+                        "one you started yourself")
     p.add_argument("--profile", default=None, metavar="DIR",
                    help="drive a real Chrome profile directory (Chrome must be "
                         "closed), reusing a session you are already signed into")
@@ -90,15 +92,31 @@ def _print_diagnosis(report, indent: str = "  ") -> None:
     print(f"{indent}Save the full record with --out report.json if you want to share it.")
 
 
+def _resolve_cdp(args):
+    """Turn --cdp auto into a live endpoint, starting our browser if needed."""
+    value = getattr(args, "cdp", None)
+    if not value:
+        return None
+    if value.lower() not in ("auto", "managed", "self"):
+        return value
+
+    from .browser import endpoint
+    url = endpoint(getattr(args, "profile", None) or None)
+    print(f"using tpmap's own Chrome at {url}")
+    return url
+
+
 def cmd_discover(args) -> int:
     from .discover import discover_page
 
+    cdp = _resolve_cdp(args)
     report, _ = discover_page(args.url, headed=args.headed, wait=args.wait,
                               click_layers=args.click_layers,
                               user_agent=args.user_agent,
                               executable_path=args.browser_path,
                               storage_state=args.session,
-                              cdp_url=args.cdp, profile_dir=args.profile)
+                              cdp_url=cdp,
+                              profile_dir=None if cdp else args.profile)
     data = report.to_dict()
     if args.json:
         print(json.dumps(data, indent=2))
@@ -145,6 +163,7 @@ def cmd_list(args) -> int:
 def cmd_fetch(args) -> int:
     from .extract import harvest_page
 
+    cdp = _resolve_cdp(args)
     urls: list[str] = list(args.urls)
     if args.from_file:
         urls += [l.strip() for l in Path(args.from_file).read_text().splitlines()
@@ -180,7 +199,8 @@ def cmd_fetch(args) -> int:
                                    arcgis=args.arcgis, user_agent=args.user_agent,
                                    executable_path=args.browser_path,
                                    storage_state=args.session,
-                                   cdp_url=args.cdp, profile_dir=args.profile)
+                                   cdp_url=cdp,
+                              profile_dir=None if cdp else args.profile)
             except Exception as exc:
                 log.exception("harvest failed")
                 print(f"    ! {exc}")
@@ -222,6 +242,31 @@ def cmd_login(args) -> int:
     for w in warnings:
         print(f"\n  ! {w}")
     print(f"\nnow run:  tpmap fetch \"{args.url}\" -o output --session {args.session}")
+    return 0
+
+
+def cmd_browser(args) -> int:
+    """Start (or report) the Chrome tpmap manages for itself."""
+    from .browser import default_profile_dir, endpoint, find_chrome
+
+    if args.where:
+        exe = find_chrome()
+        print(f"chrome:  {exe or 'not found -- set TPMAP_CHROME'}")
+        print(f"profile: {args.profile or default_profile_dir()}")
+        return 0 if exe else 1
+
+    try:
+        url = endpoint(args.profile or None, args.port)
+    except RuntimeError as exc:
+        print(f"! {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\ntpmap's Chrome is running at {url}")
+    print("\nIn that window: sign in to the site and open a scheme map.")
+    print("It uses its own profile, so your everyday Chrome is untouched and the")
+    print("sign-in is remembered for future runs.\n")
+    print("Then, leaving it open:")
+    print('  tpmap fetch "<scheme url>" -o output --cdp auto')
     return 0
 
 
@@ -357,6 +402,16 @@ def build_parser() -> argparse.ArgumentParser:
     _browser_opts(g)
     _common(g)
     g.set_defaults(func=cmd_fetch)
+
+    b = sub.add_parser("browser",
+                       help="start the Chrome tpmap manages (sign in there once)")
+    b.add_argument("--profile", default=None, metavar="DIR",
+                   help="profile directory (default: ~/.tpmap/chrome-profile)")
+    b.add_argument("--port", type=int, default=None)
+    b.add_argument("--where", action="store_true",
+                   help="just report which browser and profile would be used")
+    b.add_argument("-v", "--verbose", action="count", default=0)
+    b.set_defaults(func=cmd_browser)
 
     lg = sub.add_parser("login", help="sign in yourself and save the session")
     lg.add_argument("url", nargs="?", default=BASE_URL)
