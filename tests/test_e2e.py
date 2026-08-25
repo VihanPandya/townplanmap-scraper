@@ -257,7 +257,8 @@ def test_app_shell_is_named_as_such(site, browser_ok):
     report, _ = discover_page(f"{site}/home", wait=1.5)
     msg = "\n".join(report.errors)
     assert "app's home screen" in msg
-    assert "tpmap links" in msg
+    # it must point at the fix that does not depend on which tab is open
+    assert "pass the scheme URL" in msg and "--cdp auto" in msg
 
 
 def test_a_real_scheme_page_is_not_called_a_shell(site, browser_ok):

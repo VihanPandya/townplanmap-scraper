@@ -773,10 +773,11 @@ def _discover_once(url, *, headed=False, wait=6.0, timeout=45000,
             kinds = {h.kind for h in report.hits}
             if not report.inline and kinds <= {"tiles"}:
                 report.errors.append(
-                    "this is the app's home screen, not a scheme map. Open a "
-                    "specific scheme in the browser (search or browse to one, and "
-                    "wait for its plots to draw), then run --current again. "
-                    "`tpmap links --cdp auto` lists scheme pages it can see.")
+                    "this is the app's home screen, not a scheme map. Simplest "
+                    "fix: pass the scheme URL straight to the command instead of "
+                    "using --current -- it will be opened in this same signed-in "
+                    'browser, e.g.  tpmap fetch "https://townplanmap.com/tp/'
+                    '<scheme>" -o output --cdp auto')
 
         # -- source scan ----------------------------------------------------
         try:
