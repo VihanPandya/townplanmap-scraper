@@ -65,6 +65,23 @@ def harvest_page(page_url, outdir, *, fetcher=None, headed=False, wait=6.0,
         (rdir / f"{stem}.json").write_text(
             json.dumps(report.to_dict(), indent=2), encoding="utf-8")
 
+    result = build_outputs(report, bodies, outdir, stem=stem, result=result,
+                           fetcher=fetcher, split=split, fmt=fmt, arcgis=arcgis,
+                           latlon=latlon, title=page_url)
+    return result
+
+
+def build_outputs(report, bodies, outdir, *, stem, result=None, fetcher=None,
+                  split=False, fmt="kml", arcgis=False, latlon=False,
+                  title="TownPlanMap export") -> PageResult:
+    """Turn a discovery Report into KML files on disk."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    if result is None:
+        result = PageResult(page_url=title)
+        result.report = report
+        result.hits = len(report.hits)
+
     raw_docs: list[tuple[str, bytes]] = []      # native KML, kept verbatim
     collections: list[dict] = []                # everything else, normalised
 
@@ -130,7 +147,7 @@ def harvest_page(page_url, outdir, *, fetcher=None, headed=False, wait=6.0,
             if merged.get("features"):
                 suffix = "-converted" if raw_docs else ""
                 write(f"{stem}{suffix}",
-                      K.feature_collection_to_kml(merged, page_url).encode("utf-8"))
+                      K.feature_collection_to_kml(merged, title).encode("utf-8"))
 
     if not result.files:
         if report.hits:

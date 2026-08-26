@@ -246,7 +246,7 @@ def test_redirect_to_app_home_is_reported_as_a_bad_url(site, browser_ok):
     msg = "\n".join(e for e in report.errors if "redirected to" in e)
     assert msg, report.errors
     assert "not a real page" in msg
-    assert "--current" in msg
+    assert "tpmap watch" in msg
     assert "session" not in msg.lower()
 
 
@@ -258,7 +258,7 @@ def test_app_shell_is_named_as_such(site, browser_ok):
     msg = "\n".join(report.errors)
     assert "app's home screen" in msg
     # it must point at the fix that does not depend on which tab is open
-    assert "pass the scheme URL" in msg and "--cdp auto" in msg
+    assert "tpmap watch" in msg
 
 
 def test_a_real_scheme_page_is_not_called_a_shell(site, browser_ok):

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field, asdict
 from urllib.parse import urljoin, urlparse
 
@@ -464,6 +465,72 @@ class CdpUnreachable(Exception):
     """No Chrome is listening for a debugger on the given endpoint."""
 
 
+class ResponseCollector:
+    """Classifies every response a page makes and files it on a Report.
+
+    Shared between a single-page discovery run and a live capture across a
+    whole browser, so both see traffic the same way.
+    """
+
+    def __init__(self, report, bodies, text_blobs, base_url, capture=True):
+        self.report = report
+        self.bodies = bodies
+        self.text_blobs = text_blobs
+        self.base_url = base_url
+        self.capture = capture
+        self.captured_total = 0
+
+    def __call__(self, response):
+        report = self.report
+        try:
+            rurl = response.url
+            if rurl.startswith("data:"):
+                return
+            ctype = response.headers.get("content-type", "")
+            rtype = getattr(response.request, "resource_type", "")
+            if rtype in ("image", "media", "font", "stylesheet"):
+                return
+
+            body = None
+            if self.capture and self.captured_total < MAX_CAPTURE:
+                try:
+                    body = response.body()
+                    self.captured_total += len(body)
+                except Exception:
+                    body = None
+
+            # keep HTML/JS text around so we can grep it for literal KML links
+            if body and (rtype in ("document", "script") or "javascript" in ctype
+                         or "html" in ctype):
+                if len(body) < 8 * 1024 * 1024:
+                    self.text_blobs.append(
+                        (rurl, body.decode("utf-8", errors="replace")))
+
+            # Any text payload may name scheme routes, JSON API replies most of all.
+            if body and len(body) < 8 * 1024 * 1024 and (
+                    "json" in ctype or "text" in ctype or "javascript" in ctype
+                    or rtype in ("document", "script", "xhr", "fetch")):
+                for route in _paths_in_source(
+                        body.decode("utf-8", errors="replace"), self.base_url):
+                    if route not in report.routes and len(report.routes) < 500:
+                        report.routes.append(route)
+
+            if len(report.responses) < 400:
+                report.responses.append({
+                    "url": rurl[:400], "type": rtype, "content_type": ctype,
+                    "status": getattr(response, "status", 0),
+                    "size": len(body) if body else 0})
+
+            kind = classify(rurl, ctype, body)
+            if kind:
+                report.add(Hit(url=rurl, kind=kind, source="network",
+                               content_type=ctype, size=len(body) if body else 0))
+                if body:
+                    self.bodies[rurl] = body
+        except Exception as exc:                      # never break the page load
+            log.debug("response handler error: %s", exc)
+
+
 def _open_context(pw, *, headed, executable_path, storage_state, cdp_url,
                   profile_dir, user_agent):
     """Return (context, close_fn).
@@ -557,57 +624,8 @@ def _discover_once(url, *, headed=False, wait=6.0, timeout=45000,
     report = Report(page_url=url)
     bodies: dict[str, bytes] = {}
     text_blobs: list[tuple[str, str]] = []   # (url, source text) for the regex scan
-    captured_total = 0
 
-    def on_response(response):
-        nonlocal captured_total
-        try:
-            rurl = response.url
-            if rurl.startswith("data:"):
-                return
-            headers = response.headers
-            ctype = headers.get("content-type", "")
-            rtype = getattr(response.request, "resource_type", "")
-            if rtype in ("image", "media", "font", "stylesheet"):
-                return
-
-            body = None
-            if capture and captured_total < MAX_CAPTURE:
-                try:
-                    body = response.body()
-                    captured_total += len(body)
-                except Exception:
-                    body = None
-
-            # keep HTML/JS text around so we can grep it for literal KML links
-            if body and (rtype in ("document", "script") or "javascript" in ctype
-                         or "html" in ctype):
-                if len(body) < 8 * 1024 * 1024:
-                    text_blobs.append((rurl, body.decode("utf-8", errors="replace")))
-
-            # Any text payload may name scheme routes, JSON API replies most of all.
-            if body and len(body) < 8 * 1024 * 1024 and (
-                    "json" in ctype or "text" in ctype or "javascript" in ctype
-                    or rtype in ("document", "script", "xhr", "fetch")):
-                for route in _paths_in_source(
-                        body.decode("utf-8", errors="replace"), url):
-                    if route not in report.routes and len(report.routes) < 500:
-                        report.routes.append(route)
-
-            if len(report.responses) < 400:
-                report.responses.append({
-                    "url": rurl[:400], "type": rtype, "content_type": ctype,
-                    "status": getattr(response, "status", 0),
-                    "size": len(body) if body else 0})
-
-            kind = classify(rurl, ctype, body)
-            if kind:
-                report.add(Hit(url=rurl, kind=kind, source="network",
-                               content_type=ctype, size=len(body) if body else 0))
-                if body:
-                    bodies[rurl] = body
-        except Exception as exc:                      # never break the page load
-            log.debug("response handler error: %s", exc)
+    on_response = ResponseCollector(report, bodies, text_blobs, url, capture)
 
     with sync_playwright() as pw:
         try:
@@ -692,62 +710,9 @@ def _discover_once(url, *, headed=False, wait=6.0, timeout=45000,
 
         page.wait_for_timeout(int(wait * 1000))
 
-        # -- page probe, across every frame ---------------------------------
-        # The map is often inside an iframe, so the main frame alone is not enough.
-        frames = [page]
-        try:
-            frames += [f for f in page.frames if f is not page.main_frame]
-        except PWError:
-            pass
+        probe_page(page, report, url)
 
-        for frame in frames:
-            try:
-                probe = frame.evaluate(PROBE_SCRIPT)
-            except PWError as exc:
-                report.errors.append(f"page probe failed: {str(exc)[:200]}")
-                continue
-            if not probe:
-                continue
-            if probe.get("libs"):
-                log.info("map libraries detected: %s", ", ".join(probe["libs"]))
-            for layer in probe.get("layers", []):
-                if isinstance(layer, dict):
-                    report.inline.append(layer)
-            for u in probe.get("urls", []):
-                absolute = urljoin(url, u)
-                kind = classify(absolute) or "geojson"
-                report.add(Hit(url=absolute, kind=kind, source="init-hook",
-                               note="referenced by in-page map object"))
-
-        # -- inline JSON (Next.js and friends embed page data, never fetch it) --
-        from .coerce import coerce_to_feature_collection
-        from .kml import ConversionError
-
-        for frame in frames:
-            try:
-                blocks = frame.evaluate(INLINE_JSON_SCRIPT) or []
-            except PWError as exc:
-                report.errors.append(f"inline json scan failed: {str(exc)[:200]}")
-                continue
-            for block in blocks:
-                text = block.get("text") or ""
-                try:
-                    obj = json.loads(text)
-                except ValueError:
-                    continue
-                try:
-                    fc = coerce_to_feature_collection(obj)
-                except ConversionError:
-                    continue
-                log.info("inline JSON %s -> %d feature(s)",
-                         block.get("source"), len(fc["features"]))
-                report.inline.append(fc)
-                report.add(Hit(url=f"{url}#{block.get('source')}", kind="embedded",
-                               source="inline-json", size=len(text),
-                               note="geodata embedded in the page's own HTML"))
-
-        # Landing somewhere else means the page is gated, and no amount of
-        # waiting will produce a map.
+        # Landing somewhere else means the page is gated or is not a page.
         try:
             final = page.url
         except PWError:
@@ -755,12 +720,10 @@ def _discover_once(url, *, headed=False, wait=6.0, timeout=45000,
         if urlparse(final).path.rstrip("/") != urlparse(url).path.rstrip("/"):
             landing = urlparse(final).path.rstrip("/").lower()
             if landing in ("/home", "/dashboard", "/app", "/maps", ""):
-                # Being sent to the app's own home page means the session is fine
-                # and the URL simply is not a page.
                 report.errors.append(
                     f"redirected to {final} -- you are signed in, so this URL is "
-                    f"most likely not a real page. Open the scheme you want in the "
-                    f"browser and run with --current instead of a URL")
+                    f"most likely not a real page, or the app only resolves it "
+                    f"through in-app navigation. Try: tpmap watch -o output")
             else:
                 report.errors.append(
                     f"redirected to {final} -- this page is gated. Sign in with "
@@ -773,11 +736,10 @@ def _discover_once(url, *, headed=False, wait=6.0, timeout=45000,
             kinds = {h.kind for h in report.hits}
             if not report.inline and kinds <= {"tiles"}:
                 report.errors.append(
-                    "this is the app's home screen, not a scheme map. Simplest "
-                    "fix: pass the scheme URL straight to the command instead of "
-                    "using --current -- it will be opened in this same signed-in "
-                    'browser, e.g.  tpmap fetch "https://townplanmap.com/tp/'
-                    '<scheme>" -o output --cdp auto')
+                    "this is the app's home screen, not a scheme map. If the "
+                    "scheme URL will not load directly, record instead: run "
+                    "`tpmap watch -o output` and browse to the scheme yourself "
+                    "while it captures.")
 
         # -- source scan ----------------------------------------------------
         try:
@@ -1068,4 +1030,165 @@ def discover_page(url, **kwargs):
     # The attach pass complains about an empty page; once reloaded that is moot.
     report.errors = list(fresh.errors) if (fresh.hits or fresh.inline) else (
         report.errors + [e for e in fresh.errors if e not in report.errors])
+    return report, bodies
+
+
+def probe_page(page, report, base_url):
+    """Read geodata out of a live page: its map objects and its inline JSON.
+
+    Every frame is probed -- the map is often in an iframe -- and failures are
+    recorded rather than raised, so one bad frame cannot lose the rest.
+    """
+    from playwright.sync_api import Error as PWError
+
+    from .coerce import coerce_to_feature_collection
+    from .kml import ConversionError
+
+    frames = [page]
+    try:
+        frames += [f for f in page.frames if f is not page.main_frame]
+    except PWError:
+        pass
+
+    for frame in frames:
+        try:
+            probe = frame.evaluate(PROBE_SCRIPT)
+        except PWError as exc:
+            report.errors.append(f"page probe failed: {str(exc)[:200]}")
+            continue
+        if not probe:
+            continue
+        if probe.get("libs"):
+            log.info("map libraries detected: %s", ", ".join(probe["libs"]))
+        for layer in probe.get("layers", []):
+            if isinstance(layer, dict):
+                report.inline.append(layer)
+        for u in probe.get("urls", []):
+            absolute = urljoin(base_url, u)
+            report.add(Hit(url=absolute, kind=classify(absolute) or "geojson",
+                           source="init-hook",
+                           note="referenced by in-page map object"))
+
+    for frame in frames:
+        try:
+            blocks = frame.evaluate(INLINE_JSON_SCRIPT) or []
+        except PWError as exc:
+            report.errors.append(f"inline json scan failed: {str(exc)[:200]}")
+            continue
+        for item in blocks:
+            text = item.get("text") or ""
+            try:
+                obj = json.loads(text)
+            except ValueError:
+                continue
+            try:
+                fc = coerce_to_feature_collection(obj)
+            except ConversionError:
+                continue
+            log.info("inline JSON %s -> %d feature(s)",
+                     item.get("source"), len(fc["features"]))
+            report.inline.append(fc)
+            report.add(Hit(url=f"{base_url}#{item.get('source')}", kind="embedded",
+                           source="inline-json", size=len(text),
+                           note="geodata embedded in the page's own HTML"))
+
+
+def watch_browser(cdp_url, *, seconds=120, capture=True, on_tick=None):
+    """Record geodata across a whole browser while the user drives it.
+
+    Some apps cannot be entered by URL at all -- their routes only resolve
+    through in-app navigation -- so there is nothing to point a scraper at.
+    Watching sidesteps that entirely: every page in the browser is listened to,
+    including ones opened later, and whatever geodata goes past is collected
+    while the person simply uses the site.
+    """
+    from playwright.sync_api import Error as PWError
+    from playwright.sync_api import sync_playwright
+
+    report = Report(page_url="(live capture)")
+    bodies: dict[str, bytes] = {}
+    text_blobs: list[tuple[str, str]] = []
+    collector = ResponseCollector(report, bodies, text_blobs, cdp_url, capture)
+
+    with sync_playwright() as pw:
+        last = None
+        for ep in cdp_endpoints(cdp_url):
+            try:
+                browser = pw.chromium.connect_over_cdp(ep)
+                break
+            except PWError as exc:
+                last = exc
+        else:
+            raise CdpUnreachable(f"could not attach to {cdp_url}: {last}")
+
+        # Listen at the context, not per page. Attaching to each tab as it
+        # appears always loses its first requests -- a page fetches its data
+        # milliseconds after opening, long before any poll notices the tab.
+        watched_contexts = set()
+
+        def watch_context(ctx):
+            if id(ctx) in watched_contexts:
+                return
+            watched_contexts.add(id(ctx))
+            try:
+                ctx.on("response", collector)
+            except (PWError, AttributeError):
+                # Older Playwright has no context-level event; fall back.
+                for page in ctx.pages:
+                    try:
+                        page.on("response", collector)
+                    except PWError:
+                        pass
+                try:
+                    ctx.on("page", lambda p: p.on("response", collector))
+                except PWError:
+                    pass
+
+        for ctx in browser.contexts:
+            watch_context(ctx)
+
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            # A brand-new context (a fresh window) still needs picking up.
+            for ctx in browser.contexts:
+                watch_context(ctx)
+            if on_tick:
+                on_tick(int(deadline - time.monotonic()), len(report.hits),
+                        len(report.responses))
+            # Sleeping blocks Playwright's event loop, so responses would queue
+            # up and only be handled at the end -- by which point a body may no
+            # longer be retrievable, the page having navigated away. Waiting
+            # through a page pumps the loop instead, so each response is
+            # classified as it arrives.
+            pumped = False
+            for ctx in browser.contexts:
+                for page in ctx.pages:
+                    try:
+                        page.wait_for_timeout(1000)
+                        pumped = True
+                    except PWError:
+                        continue
+                    break
+                if pumped:
+                    break
+            if not pumped:
+                time.sleep(1.0)
+
+        # Whatever ended up on screen is read out at the end.
+        for ctx in browser.contexts:
+            for page in ctx.pages:
+                try:
+                    probe_page(page, report, page.url)
+                except PWError as exc:
+                    log.debug("probe failed for %s: %s", page, exc)
+
+        for base, text in text_blobs:
+            for route in _paths_in_source(text, base):
+                if route not in report.routes and len(report.routes) < 500:
+                    report.routes.append(route)
+            for found in scan_source(text, base):
+                report.add(Hit(url=found, kind=classify(found) or "kml",
+                               source="source-scan",
+                               note="literal reference in page source"))
+
     return report, bodies

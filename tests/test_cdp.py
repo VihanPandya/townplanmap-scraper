@@ -288,3 +288,50 @@ def test_attach_falls_back_to_a_reload_when_the_tab_yields_nothing(site, user_ch
     assert [h.kind for h in report.hits] == ["embedded"]
     # the complaint from the empty attach pass must not survive
     assert not any("bytes of HTML" in e for e in report.errors)
+
+
+def test_watch_captures_while_the_user_navigates(site, user_chrome, tmp_path):
+    """Some apps cannot be entered by URL; recording while browsing is the way in.
+
+    Nothing is fetched until the page is opened part-way through the recording,
+    so this only passes if traffic is captured live rather than replayed.
+    """
+    import threading
+
+    from tpmap.discover import watch_browser
+    from tpmap.extract import build_outputs
+    endpoint, _ = user_chrome
+
+    def browse():
+        from playwright.sync_api import sync_playwright
+        time.sleep(2)
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(endpoint)
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+            page.goto(f"{site}/tp/scheme-c.html", wait_until="domcontentloaded")
+            page.wait_for_timeout(1500)
+
+    thread = threading.Thread(target=browse, daemon=True)
+    thread.start()
+    report, bodies = watch_browser(endpoint, seconds=9)
+    thread.join(timeout=15)
+
+    assert report.responses, "no traffic was recorded"
+    assert any(h.kind == "embedded" for h in report.hits), [h.kind for h in report.hits]
+
+    result = build_outputs(report, bodies, tmp_path, stem="capture")
+    assert result.ok, result.errors
+    # Watching deliberately covers the whole browser, so other tabs left open
+    # contribute too; what matters is that this page's plots are in there.
+    import xml.etree.ElementTree as ET
+    ns = {"k": "http://www.opengis.net/kml/2.2"}
+    names = {e.text for e in ET.parse(result.files[0]).getroot()
+             .findall(".//k:Placemark/k:name", ns)}
+    assert {"FP-101", "FP-102", "FP-103"} <= names, names
+
+
+def test_watch_reports_an_unreachable_browser(tmp_path):
+    from tpmap.discover import CdpUnreachable, watch_browser
+    with pytest.raises(CdpUnreachable):
+        watch_browser(f"http://127.0.0.1:{_free_port()}", seconds=1)

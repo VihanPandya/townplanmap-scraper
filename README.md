@@ -190,6 +190,28 @@ tpmap fetch <url> -o output --session session.json
 None of this bypasses authentication — you sign in as yourself, exactly as you would
 by hand. Keep `session.json` and profile directories out of version control.
 
+## When the site cannot be entered by URL
+
+Some apps resolve their routes only through in-app navigation: paste a scheme URL
+straight into the address bar and you land back on the home screen. There is then
+nothing to point a scraper at.
+
+Record instead. Start it, then simply use the site:
+
+```bash
+tpmap watch -o output --seconds 180
+```
+
+Every page in the browser is listened to, including tabs opened later, and anything
+geodata-shaped that goes past is collected — then written as KML when the timer ends.
+Browse to the scheme, let its plots draw, zoom to the full extent.
+
+```
+  142s left   3 geodata endpoint(s)   87 request(s) seen
+    -> output/capture.kml
+  412 placemark(s) captured.
+```
+
 ## Converting JSON you already have
 
 If you have a `.json` from the site (saved from the browser's network tab, or handed
@@ -220,6 +242,7 @@ a clear error instead of a KML full of nonsense.
 
 ```
 tpmap browser           start the Chrome tpmap manages (sign in there once)
+tpmap watch             record geodata while you browse the site yourself
 tpmap links             list map pages linked from the page open in the browser
 tpmap login [URL]       sign in yourself, save the session for later runs
 tpmap discover URL      what geodata does this page serve?

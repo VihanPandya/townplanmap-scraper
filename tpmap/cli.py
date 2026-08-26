@@ -117,6 +117,50 @@ def _current_url(cdp: str) -> str | None:
     return url
 
 
+def cmd_watch(args) -> int:
+    """Record geodata across the browser while the user drives it."""
+    from .discover import CdpUnreachable, watch_browser
+    from .extract import build_outputs
+
+    cdp = _resolve_cdp(args) or args.cdp
+    print(f"\nRecording for {args.seconds}s. In the browser window: browse to the "
+          f"scheme you want\nand let its plots draw. Zoom to the whole extent. "
+          f"Anything the page loads is captured.\n")
+
+    def tick(left, hits, seen):
+        print(f"\r  {left:4d}s left   {hits} geodata endpoint(s)   "
+              f"{seen} request(s) seen ", end="", flush=True)
+
+    try:
+        report, bodies = watch_browser(cdp, seconds=args.seconds, on_tick=tick)
+    except CdpUnreachable as exc:
+        print(f"\n! {exc}", file=sys.stderr)
+        return 1
+    print()
+
+    outdir = Path(args.out)
+    result = build_outputs(report, bodies, outdir, stem=args.name,
+                           fmt=args.format, split=args.split, latlon=args.latlon,
+                           title="TownPlanMap live capture")
+    if args.save_report:
+        rdir = outdir / "_reports"
+        rdir.mkdir(parents=True, exist_ok=True)
+        (rdir / f"{args.name}.json").write_text(
+            json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+
+    if result.ok:
+        for path in result.files:
+            print(f"    -> {path}")
+        print(f"\n{result.placemarks} placemark(s) captured.")
+        return 0
+
+    print("\nNo geodata was captured.")
+    for err in result.errors[:3]:
+        print(f"  ! {err}")
+    _print_diagnosis(report)
+    return 1
+
+
 def cmd_links(args) -> int:
     """List the map pages linked from whatever is open in the browser."""
     from .crawl import looks_like_map_page
@@ -523,6 +567,23 @@ def build_parser() -> argparse.ArgumentParser:
     _browser_opts(g)
     _common(g)
     g.set_defaults(func=cmd_fetch)
+
+    w = sub.add_parser("watch",
+                       help="record geodata while you browse the site yourself")
+    w.add_argument("-o", "--out", default="output", help="output directory")
+    w.add_argument("--seconds", type=int, default=120,
+                   help="how long to record (default: 120)")
+    w.add_argument("--name", default="capture", help="output filename stem")
+    w.add_argument("--format", choices=["kml", "kmz"], default="kml")
+    w.add_argument("--split", action="store_true")
+    w.add_argument("--latlon", action="store_true",
+                   help="coordinates are [lat, lon]; swap them")
+    w.add_argument("--no-save-report", dest="save_report", action="store_false",
+                   help="skip writing the diagnostic report")
+    w.add_argument("--cdp", default="auto", metavar="URL")
+    w.add_argument("--profile", default=None, metavar="DIR")
+    w.add_argument("-v", "--verbose", action="count", default=0)
+    w.set_defaults(func=cmd_watch)
 
     k = sub.add_parser("links",
                        help="list map pages linked from the page open in the browser")
